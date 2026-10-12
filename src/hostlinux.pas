@@ -544,14 +544,31 @@ begin
   end;
 end;
 
+function WavBytes(const Path: string): Int64;
+var
+  F: TFileStream;
+begin
+  Result := -1;
+  if not FileExists(Path) then
+    Exit;
+  try
+    F := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+    try
+      Result := F.Size;
+    finally
+      F.Free;
+    end;
+  except
+    Result := -1;
+  end;
+end;
+
 procedure SayWhy(Code: Integer);
 var
   N: Int64;
   Note: string;
 begin
-  N := -1;
-  if FileExists(SpeechPath) then
-    N := FileSize(SpeechPath);
+  N := WavBytes(SpeechPath);
   Writeln('espeak exited ', Code, ', ', SpeechPath, ' is ', N, ' bytes');
   Note := Trim(SpeakNote);
   if Note <> '' then
