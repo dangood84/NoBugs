@@ -119,7 +119,9 @@ var
   WantQuit: Boolean;
   Talker: TProcess;
   SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed: string;
+  AudioRuntime, PulseServer: string;
   SpeechPhase, PlayTry: Integer;
+  UseDesktopAudio: Boolean;
 
 function Dpy: TXDisplay;
 begin
@@ -460,6 +462,26 @@ begin
   end;
 end;
 
+procedure GiveEnv(Proc: TProcess; const Name, Value: string);
+var
+  I: Integer;
+  Prefix: string;
+begin
+  if (Proc = nil) or (Value = '') then
+    Exit;
+  if Proc.Environment.Count = 0 then
+    for I := 0 to GetEnvironmentVariableCount - 1 do
+      Proc.Environment.Add(GetEnvironmentString(I));
+  Prefix := Name + '=';
+  for I := 0 to Proc.Environment.Count - 1 do
+    if Copy(Proc.Environment[I], 1, Length(Prefix)) = Prefix then
+    begin
+      Proc.Environment[I] := Prefix + Value;
+      Exit;
+    end;
+  Proc.Environment.Add(Prefix + Value);
+end;
+
 procedure RunJob(const Exe: string; const Args: array of string);
 var
   I: Integer;
@@ -469,6 +491,11 @@ begin
   Talker.Executable := Exe;
   for I := 0 to High(Args) do
     Talker.Parameters.Add(Args[I]);
+  if UseDesktopAudio then
+  begin
+    GiveEnv(Talker, 'XDG_RUNTIME_DIR', AudioRuntime);
+    GiveEnv(Talker, 'PULSE_SERVER', PulseServer);
+  end;
   { Execute returns at once unless poWaitOnExit is set, and Running stays
     true until this exact process ends. }
   try
@@ -480,6 +507,7 @@ end;
 
 procedure LaunchSpeak;
 begin
+  UseDesktopAudio := False;
   if FileExists(SpeechPath) then
     DeleteFile(SpeechPath);
   { pico2wave writes a normal wav. The octave is still the header lie. }
@@ -499,22 +527,23 @@ end;
 
 procedure PrepareDesktopAudio;
 var
-  Runtime, Socket: string;
+  Socket: string;
 begin
   { Chromium plays through the desktop's Pulse socket, which on the Pi
     is PipeWire wearing Pulse's coat. A player that opens ALSA itself
     finds the HDMI port already taken and the TV stays quiet. }
-  Runtime := GetEnvironmentVariable('XDG_RUNTIME_DIR');
-  if (Runtime = '') or not DirectoryExists(Runtime) then
+  AudioRuntime := GetEnvironmentVariable('XDG_RUNTIME_DIR');
+  if (AudioRuntime = '') or not DirectoryExists(AudioRuntime) then
   begin
-    Runtime := '/run/user/' + IntToStr(fpGetUID);
-    if DirectoryExists(Runtime) then
-      fpsetenv('XDG_RUNTIME_DIR', PChar(Runtime), 1);
+    AudioRuntime := '/run/user/' + IntToStr(fpGetUID);
+    if not DirectoryExists(AudioRuntime) then
+      AudioRuntime := '';
   end;
-  Runtime := GetEnvironmentVariable('XDG_RUNTIME_DIR');
-  Socket := Runtime + '/pulse/native';
-  if (GetEnvironmentVariable('PULSE_SERVER') = '') and FileExists(Socket) then
-    fpsetenv('PULSE_SERVER', PChar('unix:' + Socket), 1);
+  PulseServer := GetEnvironmentVariable('PULSE_SERVER');
+  Socket := AudioRuntime + '/pulse/native';
+  if (PulseServer = '') and (AudioRuntime <> '') and FileExists(Socket) then
+    PulseServer := 'unix:' + Socket;
+  UseDesktopAudio := True;
 end;
 
 function BeginPlayback: Boolean;
