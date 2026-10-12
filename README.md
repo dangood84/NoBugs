@@ -62,7 +62,7 @@ The program does not take over the keyboard or the mouse. Clicks pass through. L
 
 The first announcement arrives a few seconds after launch, so you know the voice works. After that it waits an irregular while. It is not a metronome.
 
-On Windows the same program enumerates top-level windows, walks the taskbar, and asks for an American woman’s voice when one is installed. The ladybird sits in the notification area; right-click it for the menu. On Linux, pico2wave records an American woman and mpv plays the wav through the Pulse server Chromium uses, so the HDMI television hears it. The overlay is a GTK 2 window that stays off the panel: no override-redirect, and no RGBA colormap unless a compositor is actually running, because on a Pi that colormap is a white sheet. The ladybird in the panel is a GtkStatusIcon, the call Eyes uses. Right-click it, or press Ctrl-C. A pure Wayland session still needs XWayland, which Raspberry Pi OS provides. The Mac build is the one that was run and watched.
+On Windows the same program enumerates top-level windows, walks the taskbar, and asks for an American woman’s voice when one is installed. The ladybird sits in the notification area; right-click it for the menu. On Linux, pico2wave records an American woman and `paplay` or `pw-play` sends the wav to the HDMI television. The overlay is a GTK 2 window that stays off the panel: no override-redirect, and no RGBA colormap unless a compositor is actually running, because on a Pi that colormap is a white sheet. The ladybird in the panel is a GtkStatusIcon, the call Eyes uses. Right-click it, or press Ctrl-C. A pure Wayland session still needs XWayland, which Raspberry Pi OS provides. The Mac build is the one that was run and watched.
 
 ## Layout
 

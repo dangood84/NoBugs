@@ -118,7 +118,7 @@ var
   NeedShape: Boolean;
   WantQuit: Boolean;
   Talker: TProcess;
-  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed: string;
+  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed, PlayerNote, TvSink: string;
   AudioRuntime, PulseServer: string;
   SpeechPhase, PlayTry: Integer;
   UseDesktopAudio: Boolean;
@@ -495,6 +495,9 @@ begin
   begin
     GiveEnv(Talker, 'XDG_RUNTIME_DIR', AudioRuntime);
     GiveEnv(Talker, 'PULSE_SERVER', PulseServer);
+    { Keep the player's own complaints. mpv says "End of file" even when
+      it never opened the television. }
+    Talker.Options := [poUsePipes, poStderrToOutPut];
   end;
   { Execute returns at once unless poWaitOnExit is set, and Running stays
     true until this exact process ends. }
@@ -546,28 +549,132 @@ begin
   UseDesktopAudio := True;
 end;
 
+function CommandText(const Exe: string; const Args: array of string): string;
+var
+  P: TProcess;
+  I, N: Integer;
+  Buf: array[0..1023] of Byte;
+  Piece: string;
+begin
+  Result := '';
+  if Exe = '' then
+    Exit;
+  P := TProcess.Create(nil);
+  try
+    P.Executable := Exe;
+    for I := 0 to High(Args) do
+      P.Parameters.Add(Args[I]);
+    P.Options := [poUsePipes, poWaitOnExit, poStderrToOutPut];
+    GiveEnv(P, 'XDG_RUNTIME_DIR', AudioRuntime);
+    GiveEnv(P, 'PULSE_SERVER', PulseServer);
+    try
+      P.Execute;
+    except
+      Exit;
+    end;
+    if P.Output <> nil then
+      while P.Output.NumBytesAvailable > 0 do
+      begin
+        N := P.Output.Read(Buf, SizeOf(Buf));
+        if N <= 0 then
+          Break;
+        SetString(Piece, PChar(@Buf[0]), N);
+        Result := Result + Piece;
+      end;
+  finally
+    P.Free;
+  end;
+end;
+
+function HdmiSink: string;
+var
+  Text, Line, Name: string;
+  Start, P, TabAt: Integer;
+begin
+  Result := '';
+  Text := CommandText(FindOnPath(['pactl']), ['list', 'short', 'sinks']);
+  Start := 1;
+  while Start <= Length(Text) do
+  begin
+    P := Start;
+    while (P <= Length(Text)) and (Text[P] <> #10) and (Text[P] <> #13) do
+      Inc(P);
+    Line := Copy(Text, Start, P - Start);
+    if Pos('hdmi', LowerCase(Line)) > 0 then
+    begin
+      TabAt := Pos(#9, Line);
+      if TabAt > 0 then
+      begin
+        Name := Copy(Line, TabAt + 1, MaxInt);
+        TabAt := Pos(#9, Name);
+        if TabAt > 0 then
+          Name := Copy(Name, 1, TabAt - 1);
+        Name := Trim(Name);
+        if Name <> '' then
+          Exit(Name);
+      end;
+    end;
+    while (P <= Length(Text)) and ((Text[P] = #10) or (Text[P] = #13)) do
+      Inc(P);
+    Start := P;
+  end;
+end;
+
+function TakeTalkerText: string;
+var
+  N: Integer;
+  Buf: array[0..1023] of Byte;
+  Piece: string;
+begin
+  Result := '';
+  if (Talker = nil) or (Talker.Output = nil) then
+    Exit;
+  while Talker.Output.NumBytesAvailable > 0 do
+  begin
+    N := Talker.Output.Read(Buf, SizeOf(Buf));
+    if N <= 0 then
+      Break;
+    SetString(Piece, PChar(@Buf[0]), N);
+    Result := Result + Piece;
+  end;
+end;
+
+function PlayerMissed(const Note: string): Boolean;
+var
+  S: string;
+begin
+  S := LowerCase(Note);
+  Result := (Pos('no audio', S) > 0) or (Pos('failed to initialize', S) > 0) or
+    (Pos('connection refused', S) > 0) or (Pos('error', S) > 0);
+end;
+
 function BeginPlayback: Boolean;
 var
   Exe: string;
 begin
   Result := False;
   PrepareDesktopAudio;
+  if (PlayTry = 0) and (TvSink = '') then
+    TvSink := HdmiSink;
   while PlayTry <= 4 do
   begin
+    PlayerNote := '';
     case PlayTry of
       0:
         begin
-          Exe := FindOnPath(['mpv']);
-          PlayerUsed := 'mpv pulse';
+          Exe := '';
+          if TvSink <> '' then
+            Exe := FindOnPath(['paplay']);
+          PlayerUsed := 'paplay ' + TvSink;
           if Exe <> '' then
-            RunJob(Exe, ['--no-video', '--ao=pulse', PlayPath]);
+            RunJob(Exe, ['-d', TvSink, PlayPath]);
         end;
       1:
         begin
-          Exe := FindOnPath(['mpv']);
-          PlayerUsed := 'mpv pipewire';
+          Exe := FindOnPath(['pw-play']);
+          PlayerUsed := 'pw-play';
           if Exe <> '' then
-            RunJob(Exe, ['--no-video', '--ao=pipewire', PlayPath]);
+            RunJob(Exe, [PlayPath]);
         end;
       2:
         begin
@@ -578,17 +685,17 @@ begin
         end;
       3:
         begin
-          Exe := FindOnPath(['pw-play']);
-          PlayerUsed := 'pw-play';
+          Exe := FindOnPath(['mpv']);
+          PlayerUsed := 'mpv pipewire';
           if Exe <> '' then
-            RunJob(Exe, [PlayPath]);
+            RunJob(Exe, ['--no-video', '--ao=pipewire', PlayPath]);
         end;
     else
       begin
-        Exe := FindOnPath(['ffplay']);
-        PlayerUsed := 'ffplay';
+        Exe := FindOnPath(['mpv']);
+        PlayerUsed := 'mpv pulse';
         if Exe <> '' then
-          RunJob(Exe, ['-nodisp', '-autoexit', '-loglevel', 'error', PlayPath]);
+          RunJob(Exe, ['--no-video', '--ao=pulse', PlayPath]);
       end;
     end;
     if Talker <> nil then
@@ -646,8 +753,10 @@ begin
       SpeechPhase := 0;
     Exit;
   end;
+  PlayerNote := PlayerNote + TakeTalkerText;
   if Talker.Running then
     Exit;
+  PlayerNote := PlayerNote + TakeTalkerText;
   Code := Talker.ExitStatus;
   if Code > 255 then
     Code := (Code shr 8) and 255;
@@ -677,9 +786,11 @@ begin
       Flush(Output);
     end;
   end
-  else if (SpeechPhase = 2) and (Code <> 0) then
+  else if (SpeechPhase = 2) and ((Code <> 0) or PlayerMissed(PlayerNote)) then
   begin
     Writeln(PlayerUsed, ' exited ', Code);
+    if Trim(PlayerNote) <> '' then
+      Writeln(Trim(PlayerNote));
     Inc(PlayTry);
     if not BeginPlayback then
     begin
