@@ -118,7 +118,7 @@ var
   NeedShape: Boolean;
   WantQuit: Boolean;
   Talker: TProcess;
-  SpeechPath, PlayPath, SpeakExe, PlayerUsed: string;
+  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed: string;
   SpeechPhase, SpeakTry: Integer;
 
 function Dpy: TXDisplay;
