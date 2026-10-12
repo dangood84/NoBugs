@@ -118,8 +118,8 @@ var
   NeedShape: Boolean;
   WantQuit: Boolean;
   Talker: TProcess;
-  SpeechPath, PlayPath: string;
-  SpeechPhase: Integer;
+  SpeechPath, PlayPath, SpeakExe, PlayerUsed: string;
+  SpeechPhase, SpeakTry: Integer;
 
 function Dpy: TXDisplay;
 begin
@@ -439,11 +439,18 @@ end;
 function FindOnPath(const Names: array of string): string;
 var
   I: Integer;
-  Candidate: string;
+  Path, Candidate: string;
 begin
   Result := '';
+  Path := GetEnvironmentVariable('PATH');
   for I := 0 to High(Names) do
   begin
+    if Path <> '' then
+    begin
+      Candidate := FileSearch(Names[I], Path);
+      if Candidate <> '' then
+        Exit(Candidate);
+    end;
     Candidate := '/usr/bin/' + Names[I];
     if FileExists(Candidate) then
       Exit(Candidate);
@@ -462,8 +469,9 @@ begin
   Talker.Executable := Exe;
   for I := 0 to High(Args) do
     Talker.Parameters.Add(Args[I]);
-  { Execute returns at once unless poWaitOnExit is set. There is no poNoWait. }
-  Talker.Options := [poDetached];
+  { Execute returns at once unless poWaitOnExit is set, and Running stays
+    true until this exact process ends. poDetached was reporting "done"
+    while espeak was still writing the wav. }
   try
     Talker.Execute;
   except
@@ -471,28 +479,53 @@ begin
   end;
 end;
 
-procedure StartRender(const Line: string);
+procedure LaunchSpeak;
+const
+  Voices: array[0..2] of string = ('en-us+f3', 'en-us', 'en');
 var
-  Exe: string;
+  Voice: string;
 begin
-  Exe := FindOnPath(['espeak-ng', 'espeak']);
-  if Exe = '' then
+  if SpeakTry < 0 then
+    SpeakTry := 0;
+  if SpeakTry > High(Voices) then
+    SpeakTry := High(Voices);
+  Voice := Voices[SpeakTry];
+  if FileExists(SpeechPath) then
+    DeleteFile(SpeechPath);
+  RunJob(SpeakExe, ['-v', Voice, '-q', '-w', SpeechPath, ShoutedLine(SpeakLine)]);
+  if Talker = nil then
+  begin
+    SpeechPhase := 0;
+    Writeln('could not start ', SpeakExe);
+  end
+  else
+  begin
+    SpeechPhase := 1;
+    Writeln('saying: ', SpeakLine, ' (', ExtractFileName(SpeakExe), ', ', Voice, ')');
+  end;
+  Flush(Output);
+end;
+
+procedure StartRender(const Line: string);
+begin
+  SpeakExe := FindOnPath(['espeak-ng', 'espeak']);
+  if SpeakExe = '' then
   begin
     Writeln('saying (no espeak installed): ', Line);
+    Writeln('  sudo apt install espeak-ng');
+    Flush(Output);
     Exit;
   end;
-  RunJob(Exe, ['-v', 'en-us+f3', '-q', '-w', SpeechPath, ShoutedLine(Line)]);
-  if Talker = nil then
-    SpeechPhase := 0
-  else
-    SpeechPhase := 1;
-  Writeln('saying: ', Line);
+  SpeakLine := Line;
+  SpeakTry := 0;
+  LaunchSpeak;
 end;
 
 procedure PollSpeech;
 var
   Raw, Fast: TBytes;
   Player: string;
+  Code: Integer;
 begin
   if Talker = nil then
   begin
@@ -502,27 +535,61 @@ begin
   end;
   if Talker.Running then
     Exit;
+  Code := Talker.ExitStatus;
   FreeAndNil(Talker);
   if SpeechPhase = 1 then
   begin
     SpeechPhase := 0;
-    if not ReadWavFile(SpeechPath, Raw) then
+    if (Code <> 0) or not ReadWavFile(SpeechPath, Raw) then
+    begin
+      if SpeakTry < 2 then
+      begin
+        Inc(SpeakTry);
+        Writeln('that voice did not record, trying another');
+        Flush(Output);
+        LaunchSpeak;
+      end
+      else
+      begin
+        Writeln('espeak finished without a wav');
+        Flush(Output);
+      end;
       Exit;
+    end;
     Fast := SoundMasterWav(CheerWav(Raw), 2);
     if not WriteWavFile(PlayPath, Fast) then
+    begin
+      Writeln('could not write ', PlayPath);
+      Flush(Output);
       Exit;
-    Player := FindOnPath(['aplay', 'paplay']);
+    end;
+    { YouTube plays through PipeWire. aplay often opens a silent ALSA card. }
+    Player := FindOnPath(['pw-play', 'paplay', 'aplay']);
     if Player = '' then
+    begin
+      Writeln('no pw-play, paplay, or aplay on PATH');
+      Flush(Output);
       Exit;
+    end;
+    PlayerUsed := Player;
+    Writeln('playing through ', ExtractFileName(Player));
+    Flush(Output);
     if ExtractFileName(Player) = 'aplay' then
       RunJob(Player, ['-q', PlayPath])
     else
       RunJob(Player, [PlayPath]);
     if Talker <> nil then
-      SpeechPhase := 2;
+      SpeechPhase := 2
+    else
+      Writeln('could not start ', Player);
   end
   else
+  begin
+    if (SpeechPhase = 2) and (Code <> 0) then
+      Writeln(ExtractFileName(PlayerUsed), ' exited ', Code);
     SpeechPhase := 0;
+    Flush(Output);
+  end;
 end;
 
 function SpeechIdle: Boolean;
