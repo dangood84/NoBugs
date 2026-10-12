@@ -118,8 +118,8 @@ var
   NeedShape: Boolean;
   WantQuit: Boolean;
   Talker: TProcess;
-  SpeechPath, PlayPath, SpeakExe, PlayExe, SpeakLine: string;
-  SpeechPhase: Integer;
+  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed: string;
+  SpeechPhase, PlayTry: Integer;
 
 function Dpy: TXDisplay;
 begin
@@ -497,21 +497,89 @@ begin
   Flush(Output);
 end;
 
+procedure PrepareDesktopAudio;
+var
+  Runtime, Socket: string;
+begin
+  { Chromium plays through the desktop's Pulse socket, which on the Pi
+    is PipeWire wearing Pulse's coat. A player that opens ALSA itself
+    finds the HDMI port already taken and the TV stays quiet. }
+  Runtime := GetEnvironmentVariable('XDG_RUNTIME_DIR');
+  if (Runtime = '') or not DirectoryExists(Runtime) then
+  begin
+    Runtime := '/run/user/' + IntToStr(fpGetUID);
+    if DirectoryExists(Runtime) then
+      fpsetenv('XDG_RUNTIME_DIR', PChar(Runtime), 1);
+  end;
+  Runtime := GetEnvironmentVariable('XDG_RUNTIME_DIR');
+  Socket := Runtime + '/pulse/native';
+  if (GetEnvironmentVariable('PULSE_SERVER') = '') and FileExists(Socket) then
+    fpsetenv('PULSE_SERVER', PChar('unix:' + Socket), 1);
+end;
+
+function BeginPlayback: Boolean;
+var
+  Exe: string;
+begin
+  Result := False;
+  PrepareDesktopAudio;
+  while PlayTry <= 4 do
+  begin
+    case PlayTry of
+      0:
+        begin
+          Exe := FindOnPath(['mpv']);
+          PlayerUsed := 'mpv pulse';
+          if Exe <> '' then
+            RunJob(Exe, ['--no-video', '--ao=pulse', PlayPath]);
+        end;
+      1:
+        begin
+          Exe := FindOnPath(['mpv']);
+          PlayerUsed := 'mpv pipewire';
+          if Exe <> '' then
+            RunJob(Exe, ['--no-video', '--ao=pipewire', PlayPath]);
+        end;
+      2:
+        begin
+          Exe := FindOnPath(['paplay']);
+          PlayerUsed := 'paplay';
+          if Exe <> '' then
+            RunJob(Exe, [PlayPath]);
+        end;
+      3:
+        begin
+          Exe := FindOnPath(['pw-play']);
+          PlayerUsed := 'pw-play';
+          if Exe <> '' then
+            RunJob(Exe, [PlayPath]);
+        end;
+    else
+      begin
+        Exe := FindOnPath(['ffplay']);
+        PlayerUsed := 'ffplay';
+        if Exe <> '' then
+          RunJob(Exe, ['-nodisp', '-autoexit', '-loglevel', 'error', PlayPath]);
+      end;
+    end;
+    if Talker <> nil then
+    begin
+      Writeln('playing through ', PlayerUsed);
+      Flush(Output);
+      SpeechPhase := 2;
+      Exit(True);
+    end;
+    Inc(PlayTry);
+  end;
+end;
+
 procedure StartRender(const Line: string);
 begin
   SpeakExe := FindOnPath(['pico2wave']);
-  PlayExe := FindOnPath(['mpv', 'ffplay']);
   if SpeakExe = '' then
   begin
     Writeln('saying (no pico2wave installed): ', Line);
     Writeln('  sudo apt install libttspico-utils mpv');
-    Flush(Output);
-    Exit;
-  end;
-  if PlayExe = '' then
-  begin
-    Writeln('saying (no mpv or ffplay installed): ', Line);
-    Writeln('  sudo apt install mpv');
     Flush(Output);
     Exit;
   end;
@@ -572,21 +640,27 @@ begin
       Flush(Output);
       Exit;
     end;
-    Writeln('playing through ', ExtractFileName(PlayExe));
-    Flush(Output);
-    if ExtractFileName(PlayExe) = 'ffplay' then
-      RunJob(PlayExe, ['-nodisp', '-autoexit', '-loglevel', 'error', PlayPath])
-    else
-      RunJob(PlayExe, ['--no-video', '--really-quiet', '--no-terminal', PlayPath]);
-    if Talker <> nil then
-      SpeechPhase := 2
-    else
-      Writeln('could not start ', PlayExe);
+    Writeln('recorded ', WavBytes(PlayPath), ' bytes');
+    PlayTry := 0;
+    if not BeginPlayback then
+    begin
+      Writeln('no desktop player. sudo apt install mpv');
+      Flush(Output);
+    end;
+  end
+  else if (SpeechPhase = 2) and (Code <> 0) then
+  begin
+    Writeln(PlayerUsed, ' exited ', Code);
+    Inc(PlayTry);
+    if not BeginPlayback then
+    begin
+      SpeechPhase := 0;
+      Writeln('none of the desktop players could open the TV audio');
+      Flush(Output);
+    end;
   end
   else
   begin
-    if (SpeechPhase = 2) and (Code <> 0) then
-      Writeln(ExtractFileName(PlayExe), ' exited ', Code);
     SpeechPhase := 0;
     Flush(Output);
   end;
