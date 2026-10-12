@@ -118,7 +118,7 @@ var
   NeedShape: Boolean;
   WantQuit: Boolean;
   Talker: TProcess;
-  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed: string;
+  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed, SpeakNote: string;
   SpeechPhase, SpeakTry: Integer;
 
 function Dpy: TXDisplay;
@@ -471,7 +471,9 @@ begin
     Talker.Parameters.Add(Args[I]);
   { Execute returns at once unless poWaitOnExit is set, and Running stays
     true until this exact process ends. poDetached was reporting "done"
-    while espeak was still writing the wav. }
+    while espeak was still writing the wav. stderr is kept so a failed
+    recording can say why. }
+  Talker.Options := [poUsePipes, poStderrToOutPut];
   try
     Talker.Execute;
   except
@@ -492,7 +494,9 @@ begin
   Voice := Voices[SpeakTry];
   if FileExists(SpeechPath) then
     DeleteFile(SpeechPath);
-  RunJob(SpeakExe, ['-v', Voice, '-q', '-w', SpeechPath, ShoutedLine(SpeakLine)]);
+  SpeakNote := '';
+  { -q means "produce no speech", so the wav was empty for every voice. }
+  RunJob(SpeakExe, ['-v', Voice, '-w', SpeechPath, ShoutedLine(SpeakLine)]);
   if Talker = nil then
   begin
     SpeechPhase := 0;
@@ -521,6 +525,40 @@ begin
   LaunchSpeak;
 end;
 
+function TakeTalkerText: string;
+var
+  N: Integer;
+  Buf: array[0..1023] of Byte;
+  Piece: string;
+begin
+  Result := '';
+  if (Talker = nil) or (Talker.Output = nil) then
+    Exit;
+  while Talker.Output.NumBytesAvailable > 0 do
+  begin
+    N := Talker.Output.Read(Buf, SizeOf(Buf));
+    if N <= 0 then
+      Break;
+    SetString(Piece, PChar(@Buf[0]), N);
+    Result := Result + Piece;
+  end;
+end;
+
+procedure SayWhy(Code: Integer);
+var
+  N: Int64;
+  Note: string;
+begin
+  N := -1;
+  if FileExists(SpeechPath) then
+    N := FileSize(SpeechPath);
+  Writeln('espeak exited ', Code, ', ', SpeechPath, ' is ', N, ' bytes');
+  Note := Trim(SpeakNote);
+  if Note <> '' then
+    Writeln(Note);
+  Flush(Output);
+end;
+
 procedure PollSpeech;
 var
   Raw, Fast: TBytes;
@@ -533,15 +571,18 @@ begin
       SpeechPhase := 0;
     Exit;
   end;
+  SpeakNote := SpeakNote + TakeTalkerText;
   if Talker.Running then
     Exit;
   Code := Talker.ExitStatus;
+  SpeakNote := SpeakNote + TakeTalkerText;
   FreeAndNil(Talker);
   if SpeechPhase = 1 then
   begin
     SpeechPhase := 0;
-    if (Code <> 0) or not ReadWavFile(SpeechPath, Raw) then
+    if not ReadWavFile(SpeechPath, Raw) then
     begin
+      SayWhy(Code);
       if SpeakTry < 2 then
       begin
         Inc(SpeakTry);
@@ -550,10 +591,8 @@ begin
         LaunchSpeak;
       end
       else
-      begin
         Writeln('espeak finished without a wav');
-        Flush(Output);
-      end;
+      Flush(Output);
       Exit;
     end;
     Fast := SoundMasterWav(CheerWav(Raw), 2);
