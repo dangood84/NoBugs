@@ -462,7 +462,8 @@ begin
   Talker.Executable := Exe;
   for I := 0 to High(Args) do
     Talker.Parameters.Add(Args[I]);
-  Talker.Options := [poNoWait, poDetached];
+  { Execute returns at once unless poWaitOnExit is set. There is no poNoWait. }
+  Talker.Options := [poDetached];
   try
     Talker.Execute;
   except

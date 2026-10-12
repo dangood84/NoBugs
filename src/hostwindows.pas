@@ -261,7 +261,8 @@ begin
     '$s.Rate = -4; ' +
     '$s.SetOutputToWaveFile(''' + Heard + '''); ' +
     '$s.Speak(''' + Safe + ''')');
-  Talker.Options := [poNoWait, poDetached];
+  { Execute returns at once unless poWaitOnExit is set. There is no poNoWait. }
+  Talker.Options := [poDetached];
   try
     Talker.Execute;
     SpeechPhase := 1;
