@@ -118,8 +118,8 @@ var
   NeedShape: Boolean;
   WantQuit: Boolean;
   Talker: TProcess;
-  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed, SpeakNote: string;
-  SpeechPhase, SpeakTry: Integer;
+  SpeechPath, PlayPath, SpeakExe, PlayExe, SpeakLine: string;
+  SpeechPhase: Integer;
 
 function Dpy: TXDisplay;
 begin
@@ -470,10 +470,7 @@ begin
   for I := 0 to High(Args) do
     Talker.Parameters.Add(Args[I]);
   { Execute returns at once unless poWaitOnExit is set, and Running stays
-    true until this exact process ends. poDetached was reporting "done"
-    while espeak was still writing the wav. stderr is kept so a failed
-    recording can say why. }
-  Talker.Options := [poUsePipes, poStderrToOutPut];
+    true until this exact process ends. }
   try
     Talker.Execute;
   except
@@ -482,21 +479,11 @@ begin
 end;
 
 procedure LaunchSpeak;
-const
-  Voices: array[0..2] of string = ('en-us+f3', 'en-us', 'en');
-var
-  Voice: string;
 begin
-  if SpeakTry < 0 then
-    SpeakTry := 0;
-  if SpeakTry > High(Voices) then
-    SpeakTry := High(Voices);
-  Voice := Voices[SpeakTry];
   if FileExists(SpeechPath) then
     DeleteFile(SpeechPath);
-  SpeakNote := '';
-  { -q means "produce no speech", so the wav was empty for every voice. }
-  RunJob(SpeakExe, ['-v', Voice, '-w', SpeechPath, ShoutedLine(SpeakLine)]);
+  { pico2wave writes a normal wav. The octave is still the header lie. }
+  RunJob(SpeakExe, ['-l', 'en-US', '-w', SpeechPath, ShoutedLine(SpeakLine)]);
   if Talker = nil then
   begin
     SpeechPhase := 0;
@@ -505,43 +492,31 @@ begin
   else
   begin
     SpeechPhase := 1;
-    Writeln('saying: ', SpeakLine, ' (', ExtractFileName(SpeakExe), ', ', Voice, ')');
+    Writeln('saying: ', SpeakLine, ' (pico2wave)');
   end;
   Flush(Output);
 end;
 
 procedure StartRender(const Line: string);
 begin
-  SpeakExe := FindOnPath(['espeak-ng', 'espeak']);
+  SpeakExe := FindOnPath(['pico2wave']);
+  PlayExe := FindOnPath(['mpv', 'ffplay']);
   if SpeakExe = '' then
   begin
-    Writeln('saying (no espeak installed): ', Line);
-    Writeln('  sudo apt install espeak-ng');
+    Writeln('saying (no pico2wave installed): ', Line);
+    Writeln('  sudo apt install libttspico-utils mpv');
+    Flush(Output);
+    Exit;
+  end;
+  if PlayExe = '' then
+  begin
+    Writeln('saying (no mpv or ffplay installed): ', Line);
+    Writeln('  sudo apt install mpv');
     Flush(Output);
     Exit;
   end;
   SpeakLine := Line;
-  SpeakTry := 0;
   LaunchSpeak;
-end;
-
-function TakeTalkerText: string;
-var
-  N: Integer;
-  Buf: array[0..1023] of Byte;
-  Piece: string;
-begin
-  Result := '';
-  if (Talker = nil) or (Talker.Output = nil) then
-    Exit;
-  while Talker.Output.NumBytesAvailable > 0 do
-  begin
-    N := Talker.Output.Read(Buf, SizeOf(Buf));
-    if N <= 0 then
-      Break;
-    SetString(Piece, PChar(@Buf[0]), N);
-    Result := Result + Piece;
-  end;
 end;
 
 function WavBytes(const Path: string): Int64;
@@ -563,23 +538,9 @@ begin
   end;
 end;
 
-procedure SayWhy(Code: Integer);
-var
-  N: Int64;
-  Note: string;
-begin
-  N := WavBytes(SpeechPath);
-  Writeln('espeak exited ', Code, ', ', SpeechPath, ' is ', N, ' bytes');
-  Note := Trim(SpeakNote);
-  if Note <> '' then
-    Writeln(Note);
-  Flush(Output);
-end;
-
 procedure PollSpeech;
 var
   Raw, Fast: TBytes;
-  Player: string;
   Code: Integer;
 begin
   if Talker = nil then
@@ -588,27 +549,19 @@ begin
       SpeechPhase := 0;
     Exit;
   end;
-  SpeakNote := SpeakNote + TakeTalkerText;
   if Talker.Running then
     Exit;
   Code := Talker.ExitStatus;
-  SpeakNote := SpeakNote + TakeTalkerText;
+  if Code > 255 then
+    Code := (Code shr 8) and 255;
   FreeAndNil(Talker);
   if SpeechPhase = 1 then
   begin
     SpeechPhase := 0;
     if not ReadWavFile(SpeechPath, Raw) then
     begin
-      SayWhy(Code);
-      if SpeakTry < 2 then
-      begin
-        Inc(SpeakTry);
-        Writeln('that voice did not record, trying another');
-        Flush(Output);
-        LaunchSpeak;
-      end
-      else
-        Writeln('espeak finished without a wav');
+      Writeln('pico2wave exited ', Code, ', ', SpeechPath, ' is ',
+        WavBytes(SpeechPath), ' bytes');
       Flush(Output);
       Exit;
     end;
@@ -619,30 +572,21 @@ begin
       Flush(Output);
       Exit;
     end;
-    { YouTube plays through PipeWire. aplay often opens a silent ALSA card. }
-    Player := FindOnPath(['pw-play', 'paplay', 'aplay']);
-    if Player = '' then
-    begin
-      Writeln('no pw-play, paplay, or aplay on PATH');
-      Flush(Output);
-      Exit;
-    end;
-    PlayerUsed := Player;
-    Writeln('playing through ', ExtractFileName(Player));
+    Writeln('playing through ', ExtractFileName(PlayExe));
     Flush(Output);
-    if ExtractFileName(Player) = 'aplay' then
-      RunJob(Player, ['-q', PlayPath])
+    if ExtractFileName(PlayExe) = 'ffplay' then
+      RunJob(PlayExe, ['-nodisp', '-autoexit', '-loglevel', 'error', PlayPath])
     else
-      RunJob(Player, [PlayPath]);
+      RunJob(PlayExe, ['--no-video', '--really-quiet', '--no-terminal', PlayPath]);
     if Talker <> nil then
       SpeechPhase := 2
     else
-      Writeln('could not start ', Player);
+      Writeln('could not start ', PlayExe);
   end
   else
   begin
     if (SpeechPhase = 2) and (Code <> 0) then
-      Writeln(ExtractFileName(PlayerUsed), ' exited ', Code);
+      Writeln(ExtractFileName(PlayExe), ' exited ', Code);
     SpeechPhase := 0;
     Flush(Output);
   end;
@@ -808,8 +752,8 @@ var
 begin
   gtk_init(@argc, @argv);
   BuildSprites;
-  SpeechPath := GetTempDir + 'nobugs-line.wav';
-  PlayPath := GetTempDir + 'nobugs-fast.wav';
+  SpeechPath := IncludeTrailingPathDelimiter(GetTempDir) + 'nobugs-line.wav';
+  PlayPath := IncludeTrailingPathDelimiter(GetTempDir) + 'nobugs-fast.wav';
   WantQuit := False;
   FpSignal(SIGINT, @OnSig);
   FpSignal(SIGTERM, @OnSig);
