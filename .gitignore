@@ -1,0 +1,30 @@
+# Free Pascal
+*.o
+*.ppu
+*.s
+*.a
+*.or
+*.res
+*.rsj
+*.dbg
+*.compiled
+*.exe
+
+# Build trees
+/bin/
+/lib/
+*.dSYM/
+
+# The double-clickable Mac bundle is produced by `make app`
+/No Bugs.app/
+
+# Editor and desktop noise
+.DS_Store
+*.bak
+*~
+*.lps
+*.lpi
+*.lpr
+*.dbg
+*.identcache
+backup/
