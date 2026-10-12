@@ -3,8 +3,8 @@ program nobugs;
 {
   No Bugs. A parade for the title bars.
   Build this with the Free Pascal compiler. Lazarus is not required,
-  and not used: the Mac host talks to Cocoa directly, after src/launch.c
-  has opened the door.
+  and not used. The Mac host talks to Cocoa, after src/launch.c
+  has opened the door. Windows talks to Win32. Linux talks to GTK 2.
 }
 
 {$mode objfpc}{$H+}

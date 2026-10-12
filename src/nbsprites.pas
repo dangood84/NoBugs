@@ -28,11 +28,13 @@ type
 
 procedure BuildSprites;
 function SpritesReady: Boolean;
+{ A ladybird, top row first, straight RGBA. Menu bars and trays want that. }
+procedure PaintLadybugIcon(Dest: PByte; DestW, DestH: Integer);
 function SpriteFor(const Bug: TBug): TSprite;
 procedure SpriteRect(const S: TSprite; FootWorldX, FootWorldY: Double;
   out Left, Bottom, Width, Height: Double);
 procedure BlitSprite(const S: TSprite; FootWorldX, FootWorldY, RegionLeft, RegionTop: Double;
-  Dest: PByte; DestW, DestH: Integer);
+  Dest: PByte; DestW, DestH: Integer; DestStride: Integer = 0);
 procedure PremultiplyInPlace(P: PByte; Count: Integer);
 procedure SavePreview(const Path: string);
 
@@ -410,6 +412,38 @@ begin
   Ready := True;
 end;
 
+procedure PaintLadybugIcon(Dest: PByte; DestW, DestH: Integer);
+var
+  Bug: TBug;
+  S: TSprite;
+  X, Y, SX, SY: Integer;
+  Src: PByte;
+begin
+  if (Dest = nil) or (DestW < 1) or (DestH < 1) then
+    Exit;
+  FillChar(Dest^, DestW * DestH * 4, 0);
+  FillChar(Bug, SizeOf(Bug), 0);
+  Bug.Species := spLadybug;
+  Bug.Dir := 1;
+  Bug.Horizontal := True;
+  Bug.Alive := True;
+  S := SpriteFor(Bug);
+  if (S.Pixels = nil) or (S.W < 1) or (S.H < 1) then
+    Exit;
+  for Y := 0 to DestH - 1 do
+    for X := 0 to DestW - 1 do
+    begin
+      SX := X * S.W div DestW;
+      SY := Y * S.H div DestH;
+      if SX >= S.W then
+        SX := S.W - 1;
+      if SY >= S.H then
+        SY := S.H - 1;
+      Src := S.Pixels + (SY * S.W + SX) * 4;
+      Move(Src^, (Dest + (Y * DestW + X) * 4)^, 4);
+    end;
+end;
+
 function SpriteFor(const Bug: TBug): TSprite;
 var
   F: Integer;
@@ -449,7 +483,7 @@ begin
 end;
 
 procedure BlitSprite(const S: TSprite; FootWorldX, FootWorldY, RegionLeft, RegionTop: Double;
-  Dest: PByte; DestW, DestH: Integer);
+  Dest: PByte; DestW, DestH, DestStride: Integer);
 var
   Left, Bottom, Width, Height: Double;
   OX, OY, DX, DY, SX, SY, BX, BY: Integer;
@@ -459,6 +493,8 @@ var
 begin
   if (S.Pixels = nil) or (Dest = nil) then
     Exit;
+  if DestStride < DestW * 4 then
+    DestStride := DestW * 4;
   SpriteRect(S, FootWorldX, FootWorldY, Left, Bottom, Width, Height);
   DW := Trunc(Width);
   DH := Trunc(Height);
@@ -485,7 +521,7 @@ begin
       SA := Src[3];
       if SA = 0 then
         Continue;
-      Dst := Dest + (BY * DestW + BX) * 4;
+      Dst := Dest + BY * DestStride + BX * 4;
       if SA = 255 then
       begin
         Move(Src^, Dst^, 4);

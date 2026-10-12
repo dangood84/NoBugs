@@ -2,7 +2,7 @@
 
 The program is one parade and three doors. The parade — ledges, bugs, sprites, the chime, the sentence — is ordinary Pascal and does not know which operating system it is on. A host watches the real desktop and paints the parade on top of it.
 
-Lazarus is not in this picture. On a Mac the host calls Cocoa through the units that ship with Free Pascal. On Windows it calls Win32. On Linux it calls X11.
+Lazarus is not in this picture. On a Mac the host calls Cocoa through the units that ship with Free Pascal. On Windows it calls Win32. On Linux it calls GTK 2, and X11 only to read the window list and the panel strut.
 
 ## Why a C file runs first
 
@@ -71,9 +71,9 @@ A long pause in the run loop is clamped. One huge time step would let a beetle p
 
 The cast is drawn into small RGBA sprites, two pixels per point, so a retina screen can show them 1:1. Feet are the anchor. The body sits above the ledge, with a soft shadow just under it. Left-facing frames are mirrors. Vertical frames are the same art turned, for a Dock that lives on the side.
 
-The Mac host turns each sprite into a `CGImage` once and draws it with interpolation off. The window is borderless, non-opaque, click-through, and at level 21: above the Dock (20) and below the menu bar (24). One window per display, joined to every Space, ignored by the window cycle.
+The Mac host turns each sprite into a `CGImage` once and draws it with interpolation off. The window is borderless, non-opaque, click-through, and at level 21: above the Dock (20) and below the menu bar (24). One window per display, joined to every Space, ignored by the window cycle. The menu extra is a ladybird `NSImage`, installed the way Eyes installs its pair: the status item is retained, the image is not a template, and the title is not drawn beside it.
 
-Windows blits into a top-down 32-bit DIB and hands it to `UpdateLayeredWindow`. Linux does the same into an `XImage`.
+Windows blits into a top-down 32-bit DIB, swaps to BGRA, and hands it to `UpdateLayeredWindow`. The tray icon is `Shell_NotifyIconA` with a colour icon, which is the call that actually appears on Windows 10. Linux is GTK 2. The panel icon is `gtk_status_icon_new`, declared by hand because FPC's gtk2 unit omits it, which is how Eyes gets a picture into the Raspberry Pi panel. The overlay does not use override-redirect. It takes an RGBA colormap only when a compositor owns `_NET_WM_CM_S0`. Otherwise the bugs are a 1-bit shape, punched in after an empty shape, so the first frame is not a white sheet. The input shape is cleared again after every mask, because the mask call puts clicks back.
 
 ## The voice
 
@@ -85,4 +85,4 @@ Windows asks PowerShell’s `System.Speech` for an American woman and applies th
 
 ## What was watched
 
-On this Mac the self-test passed, the Dock ledge landed on the top of the Dock, and the bugs were visible walking it: beetles, ladybirds, caterpillars, ants. The menu bar item read No Bugs. The headcount dipped whenever one of them walked off and came back a moment later. The spoken line is Kathy, recorded at 11025 Hz and played at 22050.
+On this Mac the self-test passed, the Dock ledge landed on the top of the Dock, and the bugs were visible walking it: beetles, ladybirds, caterpillars, ants. The menu bar shows a ladybird. The headcount dipped whenever one of them walked off and came back a moment later. The spoken line is Kathy, recorded at 11025 Hz and played at 22050. Linux and Windows are compiled on those machines.

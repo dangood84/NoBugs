@@ -101,4 +101,4 @@ A menu click on **Say "No bugs!"** skips the dice and uses that line exactly, st
 
 Ctrl-C sets the flag. The next tick calls `terminate` and halts. **Quit No Bugs** sets the same flag. The status item goes with the process.
 
-On Windows the tray icon’s Quit posts the same idea into the message loop and `GetMessage` returns. On Linux, SIGINT ends the X11 loop, and the window is destroyed on the way out.
+On Windows the tray icon’s Quit posts the same idea into the message loop and `GetMessage` returns. On Linux, Quit on the panel icon calls `gtk_main_quit`. Ctrl-C sets a flag the timer sees, and that timer is what leaves `gtk_main`. The overlay is never override-redirect, and it is not given an RGBA colormap unless a compositor is running.

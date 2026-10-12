@@ -17,7 +17,7 @@ procedure RunHost;
 implementation
 
 uses
-  Windows, SysUtils, Classes, Process, Math,
+  Windows, MMSystem, SysUtils, Classes, Process, Math,
   nbtypes, nbgeom, nbsprites, nbsim, nbsound;
 
 const
@@ -140,6 +140,63 @@ begin
   Parade.SetStage(Displays, Ledges);
 end;
 
+procedure SwapRedBlue(P: PByte; Count: Integer);
+var
+  I: Integer;
+  T: Byte;
+begin
+  { The sprites are RGBA. A Windows DIB is BGRA. }
+  for I := 0 to Count - 1 do
+  begin
+    T := P[0];
+    P[0] := P[2];
+    P[2] := T;
+    Inc(P, 4);
+  end;
+end;
+
+function BugTrayIcon: HICON;
+const
+  N = 32;
+var
+  Info: BITMAPINFO;
+  Bits: Pointer;
+  DC: HDC;
+  Color, Mask: HBITMAP;
+  IconInfo: TIconInfo;
+  Rgba: array of Byte;
+  P: PByte;
+begin
+  Result := 0;
+  SetLength(Rgba, N * N * 4);
+  PaintLadybugIcon(@Rgba[0], N, N);
+  P := @Rgba[0];
+  SwapRedBlue(P, N * N);
+  FillChar(Info, SizeOf(Info), 0);
+  Info.bmiHeader.biSize := SizeOf(BITMAPINFOHEADER);
+  Info.bmiHeader.biWidth := N;
+  Info.bmiHeader.biHeight := -N;
+  Info.bmiHeader.biPlanes := 1;
+  Info.bmiHeader.biBitCount := 32;
+  Info.bmiHeader.biCompression := BI_RGB;
+  DC := GetDC(0);
+  Bits := nil;
+  Color := CreateDIBSection(DC, Info, DIB_RGB_COLORS, Bits, 0, 0);
+  if (Color <> 0) and (Bits <> nil) then
+    Move(Rgba[0], Bits^, Length(Rgba));
+  Mask := CreateBitmap(N, N, 1, 1, nil);
+  FillChar(IconInfo, SizeOf(IconInfo), 0);
+  IconInfo.fIcon := True;
+  IconInfo.hbmMask := Mask;
+  IconInfo.hbmColor := Color;
+  Result := CreateIconIndirect(IconInfo);
+  if Color <> 0 then
+    DeleteObject(Color);
+  if Mask <> 0 then
+    DeleteObject(Mask);
+  ReleaseDC(0, DC);
+end;
+
 procedure Present;
 var
   I: Integer;
@@ -164,6 +221,7 @@ begin
         YDraw := YDraw + Sin(B.Phase * 1.6) * 0.85;
       BlitSprite(SpriteFor(B), B.X, YDraw, RegionLeft, RegionTop, PByte(Bits), BufW, BufH);
     end;
+  SwapRedBlue(PByte(Bits), BufW * BufH);
   PremultiplyInPlace(PByte(Bits), BufW * BufH);
   Pt.X := GetSystemMetrics(SM_XVIRTUALSCREEN);
   Pt.Y := GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -320,7 +378,7 @@ var
   Msg: TMsg;
   ScreenDC: HDC;
   Info: BITMAPINFO;
-  Notify: TNotifyIconData;
+  Notify: TNotifyIconDataA;
   Vx, Vy: Integer;
 begin
   BuildSprites;
@@ -341,7 +399,7 @@ begin
 
   FillChar(Cls, SizeOf(Cls), 0);
   Cls.lpfnWndProc := @WindowProc;
-  Cls.hInstance := HINSTANCE;
+  Cls.hInstance := HInstance;
   Cls.lpszClassName := 'NoBugsParade';
   Cls.hCursor := LoadCursor(0, IDC_ARROW);
   RegisterClass(Cls);
@@ -349,7 +407,7 @@ begin
   Overlay := CreateWindowEx(
     WS_EX_LAYERED or WS_EX_TRANSPARENT or WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE,
     'NoBugsParade', 'No Bugs', WS_POPUP,
-    Vx, Vy, BufW, BufH, 0, 0, HINSTANCE, nil);
+    Vx, Vy, BufW, BufH, 0, 0, HInstance, nil);
   if Overlay = 0 then
   begin
     Writeln('No Bugs could not open an overlay window.');
@@ -371,13 +429,13 @@ begin
 
   FillChar(Notify, SizeOf(Notify), 0);
   Notify.cbSize := SizeOf(Notify);
-  Notify.Wnd := Overlay;
+  Notify.hWnd := Overlay;
   Notify.uID := 1;
   Notify.uFlags := NIF_MESSAGE or NIF_ICON or NIF_TIP;
   Notify.uCallbackMessage := TrayMsg;
-  Notify.hIcon := LoadIcon(0, IDI_APPLICATION);
-  StrPLCopy(Notify.szTip, 'No Bugs — there are no bugs.', High(Notify.szTip));
-  Shell_NotifyIcon(NIM_ADD, @Notify);
+  Notify.hIcon := BugTrayIcon;
+  lstrcpynA(@Notify.szTip[0], 'No Bugs', 128);
+  Shell_NotifyIconA(NIM_ADD, @Notify);
 
   ShowWindow(Overlay, SW_SHOWNOACTIVATE);
   RefreshStage;
@@ -395,7 +453,9 @@ begin
   end;
 
   KillTimer(Overlay, 1);
-  Shell_NotifyIcon(NIM_DELETE, @Notify);
+  Shell_NotifyIconA(NIM_DELETE, @Notify);
+  if Notify.hIcon <> 0 then
+    DestroyIcon(Notify.hIcon);
   FreeAndNil(Talker);
   if Dib <> 0 then
     DeleteObject(Dib);

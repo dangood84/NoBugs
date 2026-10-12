@@ -54,6 +54,14 @@ type
     function isOpaque: ObjCBOOL; override;
   end;
 
+  NSBitmapImageRepBugs = objccategory external (NSBitmapImageRep)
+    { The real selector is longer than FPC will keep. Eyes does this too. }
+    function initRGBA(planes: Pointer; aWidth: NSInteger; aHeight: NSInteger;
+      aBits: NSInteger; aSamples: NSInteger; aAlpha: ObjCBOOL;
+      aPlanar: ObjCBOOL; aSpace: NSString; aBpr: NSInteger;
+      aBpp: NSInteger): id; message 'initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:';
+  end;
+
   TDirector = objcclass(NSObject)
   public
     procedure tick(sender: id); message 'tick:';
@@ -96,6 +104,8 @@ var
   LineBusyUntil: TDateTime;
   ChimeSound: NSSound;
   LineSound: NSSound;
+  StatusItem: NSStatusItem;
+  BarImage: NSImage;
   DumpOnly: Boolean;
   Images: array of TCachedImage;
   PrimaryTop: Double;
@@ -600,20 +610,52 @@ begin
       Panes[I].View.setNeedsDisplay_(True);
 end;
 
+function MenuBugImage: NSImage;
+const
+  Pix = 36;
+  Points = 18;
+var
+  Rep: NSBitmapImageRep;
+  Dest: PByte;
+  Pixels: array of Byte;
+begin
+  { nil planes: AppKit owns the buffer. A pointer into our array would be
+    cached as frame one and then freed out from under the menu bar. }
+  SetLength(Pixels, Pix * Pix * 4);
+  PaintLadybugIcon(@Pixels[0], Pix, Pix);
+  Rep := NSBitmapImageRep(NSBitmapImageRep.alloc.initRGBA(nil, Pix, Pix, 8, 4,
+    True, False, NSCalibratedRGBColorSpace, Pix * 4, 32));
+  Result := NSImage.alloc.initWithSize(NSMakeSize(Points, Points));
+  if Rep <> nil then
+  begin
+    Dest := PByte(Rep.bitmapData);
+    if Dest <> nil then
+      Move(Pixels[0], Dest^, Length(Pixels));
+    Result.addRepresentation(Rep);
+    Rep.release;
+  end;
+  { A template image is stamped black. The ladybird is red on purpose. }
+  Result.setTemplate(False);
+  Result.setCacheMode(NSImageCacheNever);
+end;
+
 procedure BuildMenu;
 var
   Bar: NSStatusBar;
-  Item: NSStatusItem;
   Menu: NSMenu;
   Entry: NSMenuItem;
   Button: NSStatusBarButton;
 begin
   Bar := NSStatusBar.systemStatusBar;
-  Item := Bar.statusItemWithLength(NSVariableStatusItemLength);
-  Button := Item.button;
+  StatusItem := Bar.statusItemWithLength(22);
+  StatusItem.retain;
+  Button := StatusItem.button;
+  BarImage := MenuBugImage;
   if Button <> nil then
   begin
-    Button.setTitle(NSSTR('No Bugs'));
+    Button.setImagePosition(NSImageOnly);
+    Button.setImage(nil);
+    Button.setImage(BarImage);
     Button.setToolTip(NSSTR('There are no bugs.'));
   end;
   Menu := NSMenu.alloc.initWithTitle(NSSTR('No Bugs'));
@@ -639,7 +681,7 @@ begin
     NSSTR('Quit No Bugs'), objcselector('quitApp:'), NSSTR('q'));
   Entry.setTarget(Director);
   Menu.addItem(Entry);
-  Item.setMenu(Menu);
+  StatusItem.setMenu(Menu);
 end;
 
 procedure BuildWindows;

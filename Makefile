@@ -5,7 +5,7 @@ UNAME := $(shell uname)
 
 FPCFLAGS := -Mobjfpc -Sh -O2 -gl -Fusrc -FUlib -FEbin
 
-.PHONY: all test preview app run clean
+.PHONY: all test preview app run linux windows clean
 
 all: bin/nobugs
 
@@ -37,6 +37,15 @@ app: bin/nobugs resources/Info.plist
 
 run: bin/nobugs
 	./bin/nobugs
+
+# Build on the machine that will run it. GTK is the Linux host; Win32 is the Windows host.
+linux: src/*.pas
+	mkdir -p bin lib
+	$(FPC) $(FPCFLAGS) -obin/nobugs src/nobugs.pas
+
+windows: src/*.pas
+	mkdir -p bin lib
+	$(FPC) $(FPCFLAGS) -obin/nobugs.exe src/nobugs.pas
 
 clean:
 	rm -rf bin lib *.o *.ppu "No Bugs.app"
