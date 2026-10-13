@@ -104,12 +104,17 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  { Tray test. The Grouch Tribute shows no window until it has something
-    to draw. This run does the same: words in the panel, parade window
-    stays unmapped, so we can see whether the icon itself is fine. }
-  IconTrial = True;
+
+type
+  TBugView = record
+    Win: PGtkWidget;
+    Pix: PGdkPixbuf;
+    Shown: Boolean;
+    Xid: TXWindow;
+  end;
 
 var
+  Views: array of TBugView;
   Overlay: PGtkWidget;
   OverlayPix: PGdkPixbuf;
   IconPix: PGdkPixbuf;
@@ -126,6 +131,8 @@ var
   ChannelRetry: TDateTime;
   Player: TProcess;
   ShoutPcm, Pending: TBytes;
+
+function IsBugWindow(Id: TXWindow): Boolean; forward;
 
 function Dpy: TXDisplay;
 begin
@@ -252,7 +259,7 @@ begin
     Wins := PXWindow(Prop);
     for I := 0 to Integer(NItems) - 1 do
     begin
-      if Wins[I] = OverlayXid then
+      if IsBugWindow(Wins[I]) or (Wins[I] = OverlayXid) then
         Continue;
       FillChar(Attr, SizeOf(Attr), 0);
       if XGetWindowAttributes(Dpy, Wins[I], @Attr) = 0 then
@@ -729,6 +736,167 @@ begin
     gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
 end;
 
+function IsBugWindow(Id: TXWindow): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if Id = 0 then
+    Exit;
+  for I := 0 to High(Views) do
+    if Views[I].Xid = Id then
+      Exit(True);
+end;
+
+procedure EnsureBugPix(var Pix: PGdkPixbuf; W, H: Integer);
+begin
+  if (W < 1) or (H < 1) then
+    Exit;
+  if (Pix <> nil) and (gdk_pixbuf_get_width(Pix) = W) and
+     (gdk_pixbuf_get_height(Pix) = H) then
+    Exit;
+  if Pix <> nil then
+    g_object_unref(Pix);
+  Pix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, W, H);
+end;
+
+procedure ShapeBug(I: Integer);
+var
+  GdkWin: PGdkWindow;
+  Mask, Colour: PGdkPixmap;
+  Gc: PGdkGC;
+  W, H: Integer;
+begin
+  if (I < 0) or (I > High(Views)) or (Views[I].Win = nil) or (Views[I].Pix = nil) then
+    Exit;
+  gtk_widget_realize(Views[I].Win);
+  GdkWin := gtk_widget_get_window(Views[I].Win);
+  if GdkWin = nil then
+    GdkWin := Views[I].Win^.window;
+  if GdkWin = nil then
+    Exit;
+  W := gdk_pixbuf_get_width(Views[I].Pix);
+  H := gdk_pixbuf_get_height(Views[I].Pix);
+  if (W < 1) or (H < 1) then
+    Exit;
+  Colour := gdk_pixmap_new(GdkWin, W, H, -1);
+  if Colour <> nil then
+  begin
+    Gc := gdk_gc_new(Colour);
+    if Gc <> nil then
+    begin
+      gdk_draw_rgb_32_image(Colour, Gc, 0, 0, W, H, GDK_RGB_DITHER_NONE,
+        gdk_pixbuf_get_pixels(Views[I].Pix), gdk_pixbuf_get_rowstride(Views[I].Pix));
+      g_object_unref(Gc);
+    end;
+    gdk_window_set_back_pixmap(GdkWin, Colour, False);
+    g_object_unref(Colour);
+  end;
+  Mask := gdk_pixmap_new(GdkWin, W, H, 1);
+  if Mask <> nil then
+  begin
+    gdk_pixbuf_render_threshold_alpha(Views[I].Pix, Mask, 0, 0, 0, 0, W, H, ShapeAlpha);
+    gdk_window_shape_combine_mask(GdkWin, Mask, 0, 0);
+    g_object_unref(Mask);
+  end;
+  gdk_window_clear(GdkWin);
+  PunchInput(GdkWin);
+  if Views[I].Xid = 0 then
+    Views[I].Xid := gdk_x11_drawable_get_xid(GdkWin);
+end;
+
+function OnBugExpose(Widget: PGtkWidget; Event: PGdkEvent; Data: gpointer): gboolean; cdecl;
+begin
+  ShapeBug(PtrInt(Data));
+  Result := True;
+end;
+
+procedure MakeBugWindow(I: Integer);
+begin
+  if (I < 0) or (I > High(Views)) or (Views[I].Win <> nil) then
+    Exit;
+  Views[I].Win := gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  gtk_window_set_title(PGtkWindow(Views[I].Win), 'No Bugs');
+  gtk_window_set_decorated(PGtkWindow(Views[I].Win), False);
+  gtk_window_set_keep_above(PGtkWindow(Views[I].Win), True);
+  gtk_window_set_skip_taskbar_hint(PGtkWindow(Views[I].Win), True);
+  gtk_window_set_skip_pager_hint(PGtkWindow(Views[I].Win), True);
+  gtk_window_set_accept_focus(PGtkWindow(Views[I].Win), False);
+  gtk_widget_set_app_paintable(Views[I].Win, True);
+  gtk_widget_set_double_buffered(Views[I].Win, False);
+  g_signal_connect(G_OBJECT(Views[I].Win), 'expose-event', TGCallback(@OnBugExpose),
+    Pointer(PtrInt(I)));
+end;
+
+procedure HideBug(I: Integer);
+begin
+  if (I < 0) or (I > High(Views)) or (Views[I].Win = nil) or not Views[I].Shown then
+    Exit;
+  gtk_widget_hide(Views[I].Win);
+  Views[I].Shown := False;
+end;
+
+procedure PlaceBugs;
+var
+  I, W, H, X, Y: Integer;
+  B: TBug;
+  S: TSprite;
+  FootY, Left, Bottom, Width, Height: Double;
+  Pixels: PByte;
+begin
+  if Parade = nil then
+  begin
+    for I := 0 to High(Views) do
+      HideBug(I);
+    Exit;
+  end;
+  for I := 0 to High(Parade.Bugs) do
+  begin
+    B := Parade.Bugs[I];
+    if not B.Alive then
+    begin
+      HideBug(I);
+      Continue;
+    end;
+    if I > High(Views) then
+      SetLength(Views, I + 1);
+    MakeBugWindow(I);
+    FootY := B.Y;
+    if (B.State = stWalk) or (B.State = stExit) then
+      FootY := FootY + Sin(B.Phase * 1.6) * 0.85;
+    S := SpriteFor(B);
+    SpriteRect(S, B.X, FootY, Left, Bottom, Width, Height);
+    W := Round(Width);
+    H := Round(Height);
+    if W < 1 then
+      W := 1;
+    if H < 1 then
+      H := 1;
+    X := Round(Left);
+    Y := Round(ScreenH - (Bottom + Height));
+    if (PanelTop > 0) and (Y < PanelTop) then
+      Y := PanelTop;
+    EnsureBugPix(Views[I].Pix, W, H);
+    if Views[I].Pix = nil then
+      Continue;
+    Pixels := PByte(gdk_pixbuf_get_pixels(Views[I].Pix));
+    FillChar(Pixels^, H * gdk_pixbuf_get_rowstride(Views[I].Pix), 0);
+    BlitSprite(S, B.X, FootY, Left, Bottom + Height, Pixels, W, H,
+      gdk_pixbuf_get_rowstride(Views[I].Pix));
+    HardenAlpha(Views[I].Pix);
+    gtk_window_resize(PGtkWindow(Views[I].Win), W, H);
+    gtk_window_move(PGtkWindow(Views[I].Win), X, Y);
+    if not Views[I].Shown then
+    begin
+      gtk_widget_show(Views[I].Win);
+      Views[I].Shown := True;
+    end;
+    ShapeBug(I);
+  end;
+  for I := Length(Parade.Bugs) to High(Views) do
+    HideBug(I);
+end;
+
 function OnTick(Data: gpointer): gboolean; cdecl;
 var
   Line: string;
@@ -751,7 +919,7 @@ begin
         PlayKathy;
     end;
   end;
-  Present;
+  PlaceBugs;
   Result := True;
 end;
 
@@ -901,7 +1069,6 @@ end;
 procedure RunHost;
 var
   Screen: PGdkScreen;
-  ViewH: Integer;
 begin
   gtk_init(@argc, @argv);
   BuildSprites;
@@ -914,60 +1081,18 @@ begin
   Screen := gdk_screen_get_default;
   ScreenW := gdk_screen_get_width(Screen);
   ScreenH := gdk_screen_get_height(Screen);
-  { An RGBA colormap on this Pi paints a white sheet. The bugs stay a 1-bit shape. }
   NeedShape := True;
   PanelTop := ReadPanelTop;
-  ViewH := ScreenH - PanelTop;
-  if ViewH < 1 then
-    ViewH := ScreenH;
 
   InstallIcon;
 
-  if IconTrial then
-  begin
-    Writeln('Panel test: the words No Bugs, and no parade window.');
-    Writeln('Right-click those words, or press Ctrl-C.');
-    g_timeout_add(33, TGSourceFunc(@OnTick), nil);
-    gtk_main;
-    FreeAndNil(Player);
-    if Parade <> nil then
-      FreeAndNil(Parade);
-    Exit;
-  end;
-
-  OverlayPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, ScreenW, ViewH);
-  Overlay := gtk_window_new(GTK_WINDOW_TOPLEVEL);
-  gtk_window_set_title(PGtkWindow(Overlay), 'No Bugs');
-  gtk_window_set_decorated(PGtkWindow(Overlay), False);
-  gtk_window_set_keep_above(PGtkWindow(Overlay), True);
-  gtk_window_set_skip_taskbar_hint(PGtkWindow(Overlay), True);
-  gtk_window_set_skip_pager_hint(PGtkWindow(Overlay), True);
-  gtk_window_set_accept_focus(PGtkWindow(Overlay), False);
-  gtk_widget_set_app_paintable(Overlay, True);
-  gtk_widget_set_double_buffered(Overlay, False);
-  gtk_window_move(PGtkWindow(Overlay), 0, PanelTop);
-  gtk_window_resize(PGtkWindow(Overlay), ScreenW, ViewH);
-  g_signal_connect(G_OBJECT(Overlay), 'delete-event', G_CALLBACK(@OnQuit), nil);
-  g_signal_connect(G_OBJECT(Overlay), 'realize', G_CALLBACK(@OnRealize), nil);
-  g_signal_connect(G_OBJECT(Overlay), 'map-event', G_CALLBACK(@OnMap), nil);
-  g_signal_connect(G_OBJECT(Overlay), 'expose-event', G_CALLBACK(@OnExpose), nil);
-
-  gtk_widget_realize(Overlay);
-  if gtk_widget_get_window(Overlay) <> nil then
-  begin
-    HideAll(gtk_widget_get_window(Overlay));
-    PunchInput(gtk_widget_get_window(Overlay));
-  end;
   RefreshStage;
   if Parade <> nil then
     Parade.FillRoster;
-  Present;
-  gtk_widget_show_all(Overlay);
-  PunchInput(gtk_widget_get_window(Overlay));
+  PlaceBugs;
   Writeln('No Bugs is walking the window ledges.');
-  Writeln('The ladybird is in the panel. Right-click it, or press Ctrl-C.');
+  Writeln('The words No Bugs are in the panel. Right-click them, or press Ctrl-C.');
   g_timeout_add(33, TGSourceFunc(@OnTick), nil);
-  PushBarIcon;
   gtk_main;
   FreeAndNil(Player);
   if Parade <> nil then
