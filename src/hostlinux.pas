@@ -104,7 +104,9 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  IconN = 32;
+  { Same bar slot Eyes uses. A square is clipped by the Pi panel. }
+  BarW = 48;
+  BarH = 24;
 
 var
   Overlay: PGtkWidget;
@@ -726,6 +728,7 @@ begin
     Exit;
   end;
   FeedChannel;
+  PushBarIcon;
   RefreshStage;
   if Parade <> nil then
   begin
@@ -776,28 +779,53 @@ begin
   Result := False;
 end;
 
-procedure InstallIcon;
+procedure FillBarPix;
 var
   Pixels: array of Byte;
-  Raw: PByte;
-  Y, Stride: Integer;
+  Raw, Src: PByte;
+  BugW, OX, Y, Stride: Integer;
 begin
-  SetLength(Pixels, IconN * IconN * 4);
-  PaintLadybugIcon(@Pixels[0], IconN, IconN);
-  IconPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, IconN, IconN);
+  if IconPix = nil then
+    Exit;
   Raw := PByte(gdk_pixbuf_get_pixels(IconPix));
-  if Raw <> nil then
+  if Raw = nil then
+    Exit;
+  { The art is wider than it is tall. Fit it to the bar height and centre it,
+    the way Eyes' pair of eyes sits in this same 48 by 24 slot. }
+  BugW := BarH * ArtW div ArtH;
+  if BugW > BarW then
+    BugW := BarW;
+  if BugW < 1 then
+    BugW := 1;
+  SetLength(Pixels, BugW * BarH * 4);
+  PaintLadybugIcon(@Pixels[0], BugW, BarH);
+  Stride := gdk_pixbuf_get_rowstride(IconPix);
+  OX := (BarW - BugW) div 2;
+  for Y := 0 to BarH - 1 do
   begin
-    { Rowstride can be wider than the pixels. A single Move shears the bug. }
-    Stride := gdk_pixbuf_get_rowstride(IconPix);
-    for Y := 0 to IconN - 1 do
-      Move(Pixels[Y * IconN * 4], (Raw + Y * Stride)^, IconN * 4);
+    FillChar((Raw + Y * Stride)^, BarW * 4, 0);
+    Src := @Pixels[Y * BugW * 4];
+    Move(Src^, (Raw + Y * Stride + OX * 4)^, BugW * 4);
   end;
+end;
+
+procedure PushBarIcon;
+begin
+  if (StatusIcon <> nil) and (IconPix <> nil) then
+    gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
+end;
+
+procedure InstallIcon;
+begin
+  { Eyes' order: the icon exists and is visible, then the picture is pushed.
+    A picture set only at creation stays blank once the Pi panel embeds the slot. }
+  IconPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, BarW, BarH);
+  FillBarPix;
   StatusIcon := gtk_status_icon_new;
-  gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
   gtk_status_icon_set_tooltip_text(StatusIcon, 'No Bugs');
   gtk_status_icon_set_visible(StatusIcon, True);
   g_signal_connect(G_OBJECT(StatusIcon), 'popup-menu', G_CALLBACK(@OnStatusPopup), nil);
+  PushBarIcon;
 end;
 
 procedure RunHost;
@@ -863,6 +891,7 @@ begin
   Writeln('No Bugs is walking the window ledges.');
   Writeln('The ladybird is in the panel. Right-click it, or press Ctrl-C.');
   g_timeout_add(33, TGSourceFunc(@OnTick), nil);
+  PushBarIcon;
   gtk_main;
   FreeAndNil(Player);
   if Parade <> nil then
