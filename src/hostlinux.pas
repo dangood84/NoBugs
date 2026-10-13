@@ -39,9 +39,9 @@ implementation
 {$IFDEF LINUX}
 
 uses
-  SysUtils, Classes, Process, Math, BaseUnix, Unix, ctypes,
+  SysUtils, Classes, Math, BaseUnix, Unix, ctypes,
   gtk2, gdk2, gdk2pixbuf, glib2,
-  nbtypes, nbgeom, nbsprites, nbsim, nbsound;
+  nbtypes, nbgeom, nbsprites, nbsim, nbsound, nbvoice;
 
 type
   PGtkStatusIcon = Pointer;
@@ -117,11 +117,8 @@ var
   OverlayXid: TXWindow;
   NeedShape: Boolean;
   WantQuit: Boolean;
-  Talker: TProcess;
-  SpeechPath, PlayPath, SpeakExe, SpeakLine, PlayerUsed, PlayerNote, TvSink: string;
-  AudioRuntime, PulseServer: string;
-  SpeechPhase, PlayTry: Integer;
-  UseDesktopAudio: Boolean;
+  KathyPath: string;
+  KathyUntil: TDateTime;
 
 function Dpy: TXDisplay;
 begin
@@ -438,377 +435,41 @@ begin
   end;
 end;
 
-function FindOnPath(const Names: array of string): string;
+procedure InstallKathy;
 var
-  I: Integer;
-  Path, Candidate: string;
+  Wav: TBytes;
+  F: File;
 begin
-  Result := '';
-  Path := GetEnvironmentVariable('PATH');
-  for I := 0 to High(Names) do
-  begin
-    if Path <> '' then
-    begin
-      Candidate := FileSearch(Names[I], Path);
-      if Candidate <> '' then
-        Exit(Candidate);
-    end;
-    Candidate := '/usr/bin/' + Names[I];
-    if FileExists(Candidate) then
-      Exit(Candidate);
-    Candidate := '/usr/local/bin/' + Names[I];
-    if FileExists(Candidate) then
-      Exit(Candidate);
-  end;
+  Wav := KathyShout;
+  KathyPath := IncludeTrailingPathDelimiter(GetTempDir) + 'nobugs-kathy.wav';
+  AssignFile(F, KathyPath);
+  Rewrite(F, 1);
+  if Length(Wav) > 0 then
+    BlockWrite(F, Wav[0], Length(Wav));
+  CloseFile(F);
+  KathyUntil := 0;
 end;
 
-procedure GiveEnv(Proc: TProcess; const Name, Value: string);
+procedure PlayKathy;
 var
-  I: Integer;
-  Prefix: string;
+  Cmd: string;
 begin
-  if (Proc = nil) or (Value = '') then
+  { The same two-step Lemmings uses. paplay hits the desktop mixer.
+    aplay is only there if paplay is missing. No device name: naming
+    the HDMI sink was what left the television quiet. }
+  if KathyPath = '' then
     Exit;
-  if Proc.Environment.Count = 0 then
-    for I := 0 to GetEnvironmentVariableCount - 1 do
-      Proc.Environment.Add(GetEnvironmentString(I));
-  Prefix := Name + '=';
-  for I := 0 to Proc.Environment.Count - 1 do
-    if Copy(Proc.Environment[I], 1, Length(Prefix)) = Prefix then
-    begin
-      Proc.Environment[I] := Prefix + Value;
-      Exit;
-    end;
-  Proc.Environment.Add(Prefix + Value);
-end;
-
-procedure RunJob(const Exe: string; const Args: array of string);
-var
-  I: Integer;
-begin
-  FreeAndNil(Talker);
-  Talker := TProcess.Create(nil);
-  Talker.Executable := Exe;
-  for I := 0 to High(Args) do
-    Talker.Parameters.Add(Args[I]);
-  if UseDesktopAudio then
-  begin
-    GiveEnv(Talker, 'XDG_RUNTIME_DIR', AudioRuntime);
-    GiveEnv(Talker, 'PULSE_SERVER', PulseServer);
-    { Keep the player's own complaints. mpv says "End of file" even when
-      it never opened the television. }
-    Talker.Options := [poUsePipes, poStderrToOutPut];
-  end;
-  { Execute returns at once unless poWaitOnExit is set, and Running stays
-    true until this exact process ends. }
-  try
-    Talker.Execute;
-  except
-    FreeAndNil(Talker);
-  end;
-end;
-
-procedure LaunchSpeak;
-begin
-  UseDesktopAudio := False;
-  if FileExists(SpeechPath) then
-    DeleteFile(SpeechPath);
-  { pico2wave writes a normal wav. The octave is still the header lie. }
-  RunJob(SpeakExe, ['-l', 'en-US', '-w', SpeechPath, ShoutedLine(SpeakLine)]);
-  if Talker = nil then
-  begin
-    SpeechPhase := 0;
-    Writeln('could not start ', SpeakExe);
-  end
-  else
-  begin
-    SpeechPhase := 1;
-    Writeln('saying: ', SpeakLine, ' (pico2wave)');
-  end;
+  Cmd := '(paplay ''' + KathyPath + ''' || aplay -q ''' + KathyPath +
+    ''') >/dev/null 2>&1 &';
+  fpSystem(Cmd);
+  KathyUntil := Now + (WavPlaybackSeconds(KathyShout) + 0.2) / 86400;
+  Writeln('saying: No bugs! (Kathy)');
   Flush(Output);
-end;
-
-procedure PrepareDesktopAudio;
-var
-  Socket: string;
-begin
-  { Chromium plays through the desktop's Pulse socket, which on the Pi
-    is PipeWire wearing Pulse's coat. A player that opens ALSA itself
-    finds the HDMI port already taken and the TV stays quiet. }
-  AudioRuntime := GetEnvironmentVariable('XDG_RUNTIME_DIR');
-  if (AudioRuntime = '') or not DirectoryExists(AudioRuntime) then
-  begin
-    AudioRuntime := '/run/user/' + IntToStr(fpGetUID);
-    if not DirectoryExists(AudioRuntime) then
-      AudioRuntime := '';
-  end;
-  PulseServer := GetEnvironmentVariable('PULSE_SERVER');
-  Socket := AudioRuntime + '/pulse/native';
-  if (PulseServer = '') and (AudioRuntime <> '') and FileExists(Socket) then
-    PulseServer := 'unix:' + Socket;
-  UseDesktopAudio := True;
-end;
-
-function CommandText(const Exe: string; const Args: array of string): string;
-var
-  P: TProcess;
-  I, N: Integer;
-  Buf: array[0..1023] of Byte;
-  Piece: string;
-begin
-  Result := '';
-  if Exe = '' then
-    Exit;
-  P := TProcess.Create(nil);
-  try
-    P.Executable := Exe;
-    for I := 0 to High(Args) do
-      P.Parameters.Add(Args[I]);
-    P.Options := [poUsePipes, poWaitOnExit, poStderrToOutPut];
-    GiveEnv(P, 'XDG_RUNTIME_DIR', AudioRuntime);
-    GiveEnv(P, 'PULSE_SERVER', PulseServer);
-    try
-      P.Execute;
-    except
-      Exit;
-    end;
-    if P.Output <> nil then
-      while P.Output.NumBytesAvailable > 0 do
-      begin
-        N := P.Output.Read(Buf, SizeOf(Buf));
-        if N <= 0 then
-          Break;
-        SetString(Piece, PChar(@Buf[0]), N);
-        Result := Result + Piece;
-      end;
-  finally
-    P.Free;
-  end;
-end;
-
-function HdmiSink: string;
-var
-  Text, Line, Name: string;
-  Start, P, TabAt: Integer;
-begin
-  Result := '';
-  Text := CommandText(FindOnPath(['pactl']), ['list', 'short', 'sinks']);
-  Start := 1;
-  while Start <= Length(Text) do
-  begin
-    P := Start;
-    while (P <= Length(Text)) and (Text[P] <> #10) and (Text[P] <> #13) do
-      Inc(P);
-    Line := Copy(Text, Start, P - Start);
-    if Pos('hdmi', LowerCase(Line)) > 0 then
-    begin
-      TabAt := Pos(#9, Line);
-      if TabAt > 0 then
-      begin
-        Name := Copy(Line, TabAt + 1, MaxInt);
-        TabAt := Pos(#9, Name);
-        if TabAt > 0 then
-          Name := Copy(Name, 1, TabAt - 1);
-        Name := Trim(Name);
-        if Name <> '' then
-          Exit(Name);
-      end;
-    end;
-    while (P <= Length(Text)) and ((Text[P] = #10) or (Text[P] = #13)) do
-      Inc(P);
-    Start := P;
-  end;
-end;
-
-function TakeTalkerText: string;
-var
-  N: Integer;
-  Buf: array[0..1023] of Byte;
-  Piece: string;
-begin
-  Result := '';
-  if (Talker = nil) or (Talker.Output = nil) then
-    Exit;
-  while Talker.Output.NumBytesAvailable > 0 do
-  begin
-    N := Talker.Output.Read(Buf, SizeOf(Buf));
-    if N <= 0 then
-      Break;
-    SetString(Piece, PChar(@Buf[0]), N);
-    Result := Result + Piece;
-  end;
-end;
-
-function PlayerMissed(const Note: string): Boolean;
-var
-  S: string;
-begin
-  S := LowerCase(Note);
-  Result := (Pos('no audio', S) > 0) or (Pos('failed to initialize', S) > 0) or
-    (Pos('connection refused', S) > 0) or (Pos('error', S) > 0);
-end;
-
-function BeginPlayback: Boolean;
-var
-  Exe: string;
-begin
-  Result := False;
-  PrepareDesktopAudio;
-  if (PlayTry = 0) and (TvSink = '') then
-    TvSink := HdmiSink;
-  while PlayTry <= 4 do
-  begin
-    PlayerNote := '';
-    case PlayTry of
-      0:
-        begin
-          Exe := '';
-          if TvSink <> '' then
-            Exe := FindOnPath(['paplay']);
-          PlayerUsed := 'paplay ' + TvSink;
-          if Exe <> '' then
-            RunJob(Exe, ['-d', TvSink, PlayPath]);
-        end;
-      1:
-        begin
-          Exe := FindOnPath(['pw-play']);
-          PlayerUsed := 'pw-play';
-          if Exe <> '' then
-            RunJob(Exe, [PlayPath]);
-        end;
-      2:
-        begin
-          Exe := FindOnPath(['paplay']);
-          PlayerUsed := 'paplay';
-          if Exe <> '' then
-            RunJob(Exe, [PlayPath]);
-        end;
-      3:
-        begin
-          Exe := FindOnPath(['mpv']);
-          PlayerUsed := 'mpv pipewire';
-          if Exe <> '' then
-            RunJob(Exe, ['--no-video', '--ao=pipewire', PlayPath]);
-        end;
-    else
-      begin
-        Exe := FindOnPath(['mpv']);
-        PlayerUsed := 'mpv pulse';
-        if Exe <> '' then
-          RunJob(Exe, ['--no-video', '--ao=pulse', PlayPath]);
-      end;
-    end;
-    if Talker <> nil then
-    begin
-      Writeln('playing through ', PlayerUsed);
-      Flush(Output);
-      SpeechPhase := 2;
-      Exit(True);
-    end;
-    Inc(PlayTry);
-  end;
-end;
-
-procedure StartRender(const Line: string);
-begin
-  SpeakExe := FindOnPath(['pico2wave']);
-  if SpeakExe = '' then
-  begin
-    Writeln('saying (no pico2wave installed): ', Line);
-    Writeln('  sudo apt install libttspico-utils mpv');
-    Flush(Output);
-    Exit;
-  end;
-  SpeakLine := Line;
-  LaunchSpeak;
-end;
-
-function WavBytes(const Path: string): Int64;
-var
-  F: TFileStream;
-begin
-  Result := -1;
-  if not FileExists(Path) then
-    Exit;
-  try
-    F := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
-    try
-      Result := F.Size;
-    finally
-      F.Free;
-    end;
-  except
-    Result := -1;
-  end;
-end;
-
-procedure PollSpeech;
-var
-  Raw, Fast: TBytes;
-  Code: Integer;
-begin
-  if Talker = nil then
-  begin
-    if SpeechPhase <> 0 then
-      SpeechPhase := 0;
-    Exit;
-  end;
-  PlayerNote := PlayerNote + TakeTalkerText;
-  if Talker.Running then
-    Exit;
-  PlayerNote := PlayerNote + TakeTalkerText;
-  Code := Talker.ExitStatus;
-  if Code > 255 then
-    Code := (Code shr 8) and 255;
-  FreeAndNil(Talker);
-  if SpeechPhase = 1 then
-  begin
-    SpeechPhase := 0;
-    if not ReadWavFile(SpeechPath, Raw) then
-    begin
-      Writeln('pico2wave exited ', Code, ', ', SpeechPath, ' is ',
-        WavBytes(SpeechPath), ' bytes');
-      Flush(Output);
-      Exit;
-    end;
-    Fast := SoundMasterWav(CheerWav(Raw), 2);
-    if not WriteWavFile(PlayPath, Fast) then
-    begin
-      Writeln('could not write ', PlayPath);
-      Flush(Output);
-      Exit;
-    end;
-    Writeln('recorded ', WavBytes(PlayPath), ' bytes');
-    PlayTry := 0;
-    if not BeginPlayback then
-    begin
-      Writeln('no desktop player. sudo apt install mpv');
-      Flush(Output);
-    end;
-  end
-  else if (SpeechPhase = 2) and ((Code <> 0) or PlayerMissed(PlayerNote)) then
-  begin
-    Writeln(PlayerUsed, ' exited ', Code);
-    if Trim(PlayerNote) <> '' then
-      Writeln(Trim(PlayerNote));
-    Inc(PlayTry);
-    if not BeginPlayback then
-    begin
-      SpeechPhase := 0;
-      Writeln('none of the desktop players could open the TV audio');
-      Flush(Output);
-    end;
-  end
-  else
-  begin
-    SpeechPhase := 0;
-    Flush(Output);
-  end;
 end;
 
 function SpeechIdle: Boolean;
 begin
-  Result := (SpeechPhase = 0) and (Talker = nil);
+  Result := Now >= KathyUntil;
 end;
 
 procedure OnQuit(Widget: PGtkWidget; Data: gpointer); cdecl;
@@ -830,7 +491,7 @@ end;
 procedure OnSay(Widget: PGtkWidget; Data: gpointer); cdecl;
 begin
   if SpeechIdle then
-    StartRender('No bugs!');
+    PlayKathy;
 end;
 
 procedure OnPause(Widget: PGtkWidget; Data: gpointer); cdecl;
@@ -887,12 +548,11 @@ begin
   if Parade <> nil then
   begin
     Parade.Tick(1 / 30);
-    PollSpeech;
     if SpeechIdle then
     begin
       Line := Parade.ClaimAnnouncement;
       if Line <> '' then
-        StartRender(Line);
+        PlayKathy;
     end;
   end;
   Present;
@@ -966,8 +626,7 @@ var
 begin
   gtk_init(@argc, @argv);
   BuildSprites;
-  SpeechPath := IncludeTrailingPathDelimiter(GetTempDir) + 'nobugs-line.wav';
-  PlayPath := IncludeTrailingPathDelimiter(GetTempDir) + 'nobugs-fast.wav';
+  InstallKathy;
   WantQuit := False;
   FpSignal(SIGINT, @OnSig);
   FpSignal(SIGTERM, @OnSig);

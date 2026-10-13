@@ -81,7 +81,7 @@ Windows blits into a top-down 32-bit DIB, swaps to BGRA, and hands it to `Update
 
 The sentence is not spoken live. Kathy — MacinTalk’s American woman, the one SimpleText used on System 7.5 — records “No! Bugs!” at 11025 Hz. Samantha is the understudy. `SoundMasterWav` then rewrites the sample-rate field to 22050 and leaves every sample where it was, so her pitches go up exactly one octave and the shout finishes in half the time. `NSSound` plays the chime at its honest rate, and the lied wav as soon as `say` has finished writing it. The first one is scheduled for a few seconds after launch. Later ones wait somewhere between half a minute and a minute and a half, and they wait out a pause in the parade.
 
-Windows asks PowerShell’s `System.Speech` for an American woman and applies the same header lie before `PlaySound`. Linux asks `pico2wave` for American English, doubles the rate, and hands the wav to `paplay` on the HDMI sink, or to `pw-play`.
+That finished wave is stored in the program. Windows plays the bytes with `PlaySound`. Linux writes them to a temp file and starts them the way Lemmings starts a sting: `paplay`, then `aplay` if paplay is not there. Neither machine records a voice of its own.
 
 ## What was watched
 

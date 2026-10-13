@@ -17,8 +17,8 @@ procedure RunHost;
 implementation
 
 uses
-  Windows, MMSystem, SysUtils, Classes, Process, Math,
-  nbtypes, nbgeom, nbsprites, nbsim, nbsound;
+  Windows, MMSystem, SysUtils, Classes, Math,
+  nbtypes, nbgeom, nbsprites, nbsim, nbsound, nbvoice;
 
 const
   TrayMsg = WM_USER + 24;
@@ -35,9 +35,9 @@ var
   PrimaryH: Integer;
   RegionLeft, RegionTop: Double;
   Quit: Boolean;
-  Talker: TProcess;
-  ChimePath, SpeechPath, PlayPath: string;
-  { 0 idle, 1 the voice is still writing the file, 2 the cartoon is playing. }
+  KathyHold: TBytes;
+  ChimePath: string;
+  { 0 idle, 1 Kathy's recording is still playing. }
   SpeechPhase: Integer;
   LineBusyUntil: TDateTime;
 
@@ -236,61 +236,22 @@ begin
   UpdateLayeredWindow(Overlay, 0, @Pt, @Sz, MemDC, @Src, 0, @Blend, ULW_ALPHA);
 end;
 
-procedure StartRender(const Line: string);
-var
-  Safe, Heard: string;
+procedure PlayKathy;
 begin
-  if (Talker <> nil) and Talker.Running then
+  if Length(KathyHold) < 44 then
+    KathyHold := KathyShout;
+  if Length(KathyHold) < 44 then
     Exit;
-  FreeAndNil(Talker);
-  Safe := StringReplace(ShoutedLine(Line), '''', '''''', [rfReplaceAll]);
-  Heard := StringReplace(SpeechPath, '''', '''''', [rfReplaceAll]);
-  Talker := TProcess.Create(nil);
-  Talker.Executable := 'powershell.exe';
-  Talker.Parameters.Add('-NoProfile');
-  Talker.Parameters.Add('-WindowStyle');
-  Talker.Parameters.Add('Hidden');
-  Talker.Parameters.Add('-Command');
-  { Write a wav in an American woman's voice. Playback is a separate lie. }
-  Talker.Parameters.Add(
-    'Add-Type -AssemblyName System.Speech; ' +
-    '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ' +
-    'foreach ($v in $s.GetInstalledVoices()) { ' +
-    '$i = $v.VoiceInfo; ' +
-    'if (($i.Culture.Name -like ''en-US*'') -and ($i.Gender -eq ''Female'')) { $s.SelectVoice($i.Name); break } }; ' +
-    '$s.Rate = -4; ' +
-    '$s.SetOutputToWaveFile(''' + Heard + '''); ' +
-    '$s.Speak(''' + Safe + ''')');
-  { Execute returns at once unless poWaitOnExit is set. There is no poNoWait. }
-  Talker.Options := [poDetached];
-  try
-    Talker.Execute;
-    SpeechPhase := 1;
-  except
-    FreeAndNil(Talker);
-    SpeechPhase := 0;
-  end;
+  { The bytes have to outlive this call. PlaySound only borrows them. }
+  PlaySound(PChar(@KathyHold[0]), 0, SND_MEMORY or SND_ASYNC or SND_NODEFAULT);
+  LineBusyUntil := Now + (WavPlaybackSeconds(KathyHold) + 0.2) / 86400;
+  SpeechPhase := 1;
+  Writeln('saying: No bugs! (Kathy)');
 end;
 
 procedure PollSpeech;
-var
-  Raw, Fast: TBytes;
 begin
-  if SpeechPhase = 1 then
-  begin
-    if (Talker <> nil) and Talker.Running then
-      Exit;
-    FreeAndNil(Talker);
-    SpeechPhase := 2;
-    LineBusyUntil := Now + 0.4 / 86400;
-    if not ReadWavFile(SpeechPath, Raw) then
-      Exit;
-    Fast := SoundMasterWav(CheerWav(Raw), 2);
-    if WriteWavFile(PlayPath, Fast) then
-      PlaySound(PChar(PlayPath), 0, SND_FILENAME or SND_ASYNC or SND_NODEFAULT);
-    LineBusyUntil := Now + (WavPlaybackSeconds(Fast) + 0.15) / 86400;
-  end
-  else if (SpeechPhase = 2) and (Now >= LineBusyUntil) then
+  if (SpeechPhase = 1) and (Now >= LineBusyUntil) then
     SpeechPhase := 0;
 end;
 
@@ -314,7 +275,7 @@ begin
   if not SpeechIdle then
     Exit;
   PlayChime;
-  StartRender(Line);
+  PlayKathy;
   Writeln('saying: ', Line);
 end;
 
@@ -395,8 +356,7 @@ begin
   RegionLeft := Vx;
   RegionTop := PrimaryH - Vy;
   ChimePath := GetTempDir + 'nobugs-chime.wav';
-  SpeechPath := GetTempDir + 'nobugs-line.wav';
-  PlayPath := GetTempDir + 'nobugs-fast.wav';
+  KathyHold := KathyShout;
 
   FillChar(Cls, SizeOf(Cls), 0);
   Cls.lpfnWndProc := @WindowProc;
@@ -457,7 +417,6 @@ begin
   Shell_NotifyIconA(NIM_DELETE, @Notify);
   if Notify.hIcon <> 0 then
     DestroyIcon(Notify.hIcon);
-  FreeAndNil(Talker);
   if Dib <> 0 then
     DeleteObject(Dib);
   if MemDC <> 0 then
