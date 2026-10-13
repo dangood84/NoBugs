@@ -77,6 +77,8 @@ function gtk_status_icon_new: PGtkStatusIcon; cdecl; external;
 procedure gtk_status_icon_set_from_pixbuf(icon: PGtkStatusIcon; pixbuf: PGdkPixbuf); cdecl; external;
 procedure gtk_status_icon_set_visible(icon: PGtkStatusIcon; visible: gboolean); cdecl; external;
 procedure gtk_status_icon_set_tooltip_text(icon: PGtkStatusIcon; text: Pgchar); cdecl; external;
+function gtk_status_icon_get_geometry(icon: PGtkStatusIcon; screen: Pointer;
+  area: Pointer; orientation: Pointer): gboolean; cdecl; external;
 function gtk_widget_get_window(widget: PGtkWidget): PGdkWindow; cdecl; external;
 function gdk_screen_get_rgba_colormap(screen: PGdkScreen): PGdkColormap; cdecl; external;
 procedure gdk_window_input_shape_combine_region(window: PGdkWindow;
@@ -112,6 +114,7 @@ var
   Overlay: PGtkWidget;
   OverlayPix: PGdkPixbuf;
   IconPix: PGdkPixbuf;
+  IconWin: PGtkWidget;
   StatusIcon: PGtkStatusIcon;
   OverlayPm: PGdkPixmap;
   OverlayPmW, OverlayPmH: Integer;
@@ -718,18 +721,57 @@ begin
 end;
 
 procedure PushBarIcon;
-var
-  Fresh: PGdkPixbuf;
 begin
-  { A new pixbuf each time. The panel keeps the first object it was given,
-    and that one was an empty transparent slot. }
-  if (StatusIcon = nil) or (IconPix = nil) then
+  if (StatusIcon <> nil) and (IconPix <> nil) then
+    gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
+end;
+
+function OnIconButton(Widget: PGtkWidget; Event: PGdkEvent; Data: gpointer): gboolean; cdecl;
+begin
+  Result := True;
+  if Event <> nil then
+    Popup(Event^.button.button, Event^.button.time);
+end;
+
+function OnIconExpose(Widget: PGtkWidget; Event: PGdkEvent; Data: gpointer): gboolean; cdecl;
+begin
+  Result := True;
+  if (Widget = nil) or (Widget^.window = nil) or (IconPix = nil) then
     Exit;
-  Fresh := gdk_pixbuf_copy(IconPix);
-  if Fresh = nil then
+  gdk_draw_pixbuf(Widget^.window, nil, IconPix, 0, 0, 0, 0, BarW, BarH,
+    GDK_RGB_DITHER_NONE, 0, 0);
+end;
+
+procedure PlaceIcon;
+var
+  Area: TGdkRectangle;
+  X, Y: Integer;
+begin
+  if IconWin = nil then
     Exit;
-  gtk_status_icon_set_from_pixbuf(StatusIcon, Fresh);
-  g_object_unref(Fresh);
+  X := ScreenW - BarW - 8;
+  if X < 0 then
+    X := 0;
+  { The slot's reported top is the screen edge, which parks the ladybird
+    above the VNC icon. The other icons sit in the middle of the bar. }
+  Y := 0;
+  if PanelTop > BarH then
+    Y := (PanelTop - BarH) div 2;
+  FillChar(Area, SizeOf(Area), 0);
+  if (StatusIcon <> nil) and
+     gtk_status_icon_get_geometry(StatusIcon, nil, @Area, nil) and
+     (Area.width >= 8) and (Area.width <= 160) and
+     (Area.height >= 8) and (Area.height <= 160) and
+     (Area.x >= 0) and (Area.x < ScreenW) then
+    X := Area.x + (Area.width - BarW) div 2;
+  if X < 0 then
+    X := 0;
+  if X + BarW > ScreenW then
+    X := ScreenW - BarW;
+  gtk_window_move(PGtkWindow(IconWin), X, Y);
+  gtk_window_resize(PGtkWindow(IconWin), BarW, BarH);
+  if gtk_widget_get_window(IconWin) <> nil then
+    gdk_window_raise(gtk_widget_get_window(IconWin));
 end;
 
 function OnTick(Data: gpointer): gboolean; cdecl;
@@ -744,6 +786,7 @@ begin
   end;
   FeedChannel;
   PushBarIcon;
+  PlaceIcon;
   RefreshStage;
   if Parade <> nil then
   begin
@@ -901,8 +944,9 @@ end;
 
 procedure InstallIcon;
 begin
-  { Eyes' order: the icon exists and is visible, then the picture is pushed.
-    A picture set only at creation stays blank once the Pi panel embeds the slot. }
+  { The panel reserves a tray slot and paints nothing there, so clicks on
+    that gap never arrive. This window is drawn the same way the parade is,
+    sits on the slot, and takes the click. }
   IconPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, BarW, BarH);
   FillBarPix;
   StatusIcon := gtk_status_icon_new;
@@ -910,6 +954,22 @@ begin
   gtk_status_icon_set_visible(StatusIcon, True);
   g_signal_connect(G_OBJECT(StatusIcon), 'popup-menu', G_CALLBACK(@OnStatusPopup), nil);
   PushBarIcon;
+
+  IconWin := gtk_window_new(GTK_WINDOW_POPUP);
+  gtk_window_set_decorated(PGtkWindow(IconWin), False);
+  gtk_window_set_resizable(PGtkWindow(IconWin), False);
+  gtk_window_set_accept_focus(PGtkWindow(IconWin), False);
+  gtk_window_set_skip_taskbar_hint(PGtkWindow(IconWin), True);
+  gtk_widget_set_app_paintable(IconWin, True);
+  gtk_widget_set_double_buffered(IconWin, False);
+  gtk_widget_set_size_request(IconWin, BarW, BarH);
+  gtk_widget_add_events(IconWin, GDK_BUTTON_PRESS_MASK);
+  g_signal_connect(G_OBJECT(IconWin), 'expose-event', G_CALLBACK(@OnIconExpose), nil);
+  g_signal_connect(G_OBJECT(IconWin), 'button-press-event', G_CALLBACK(@OnIconButton), nil);
+  gtk_widget_realize(IconWin);
+  PlaceIcon;
+  gtk_widget_show_all(IconWin);
+  PlaceIcon;
 end;
 
 procedure RunHost;
