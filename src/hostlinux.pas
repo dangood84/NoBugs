@@ -717,6 +717,12 @@ begin
   WantQuit := True;
 end;
 
+procedure PushBarIcon;
+begin
+  if (StatusIcon <> nil) and (IconPix <> nil) then
+    gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
+end;
+
 function OnTick(Data: gpointer): gboolean; cdecl;
 var
   Line: string;
@@ -807,12 +813,6 @@ begin
     Src := @Pixels[Y * BugW * 4];
     Move(Src^, (Raw + Y * Stride + OX * 4)^, BugW * 4);
   end;
-end;
-
-procedure PushBarIcon;
-begin
-  if (StatusIcon <> nil) and (IconPix <> nil) then
-    gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
 end;
 
 procedure InstallIcon;
