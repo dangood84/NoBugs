@@ -624,13 +624,24 @@ begin
   Pump;
 end;
 
+procedure AppendPcm(const Extra: TBytes);
+var
+  Old: Integer;
+begin
+  if Length(Extra) = 0 then
+    Exit;
+  Old := Length(Pending);
+  SetLength(Pending, Old + Length(Extra));
+  Move(Extra[0], Pending[Old], Length(Extra));
+end;
+
 procedure PlayKathy;
 begin
   if Length(ShoutPcm) = 0 then
     Exit;
   if (Player = nil) or not Player.Running then
     OpenChannel;
-  Pending := Pending + ShoutPcm;
+  AppendPcm(ShoutPcm);
   KathyUntil := Now + (Length(ShoutPcm) / 44100 + 0.4) / 86400;
   Writeln('saying: No bugs! (Kathy)');
   Flush(Output);
