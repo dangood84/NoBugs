@@ -119,7 +119,9 @@ var
   WantQuit: Boolean;
   KathyPath: string;
   KathyUntil: TDateTime;
+  ChannelRetry: TDateTime;
   Player: TProcess;
+  ShoutPcm, Pending: TBytes;
 
 function Dpy: TXDisplay;
 begin
@@ -436,12 +438,39 @@ begin
   end;
 end;
 
+function WavePcm(const Wav: TBytes): TBytes;
+var
+  I, N: Integer;
+begin
+  Result := nil;
+  I := 12;
+  while I + 8 <= Length(Wav) do
+  begin
+    N := Integer(Wav[I + 4]) or (Integer(Wav[I + 5]) shl 8) or
+      (Integer(Wav[I + 6]) shl 16) or (Integer(Wav[I + 7]) shl 24);
+    if (Wav[I] = Ord('d')) and (Wav[I + 1] = Ord('a')) and
+      (Wav[I + 2] = Ord('t')) and (Wav[I + 3] = Ord('a')) then
+    begin
+      if (N < 0) or (I + 8 + N > Length(Wav)) then
+        N := Length(Wav) - (I + 8);
+      SetLength(Result, N);
+      if N > 0 then
+        Move(Wav[I + 8], Result[0], N);
+      Exit;
+    end;
+    if N < 0 then
+      Break;
+    I := I + 8 + N;
+  end;
+end;
+
 procedure InstallKathy;
 var
   Wav: TBytes;
   F: File;
 begin
   Wav := KathyShout;
+  ShoutPcm := WavePcm(Wav);
   KathyPath := IncludeTrailingPathDelimiter(GetTempDir) + 'nobugs-kathy.wav';
   AssignFile(F, KathyPath);
   Rewrite(F, 1);
@@ -449,21 +478,62 @@ begin
     BlockWrite(F, Wav[0], Length(Wav));
   CloseFile(F);
   KathyUntil := 0;
+  ChannelRetry := 0;
+  Pending := nil;
 end;
 
-procedure PlayKathy;
+procedure EnqueueSilence(N: Integer);
 var
-  Exe: string;
+  Old: Integer;
 begin
-  { paplay hands the wave to PipeWire and leaves. The television only
-    gets the first syllable. pw-play stays until the shout has been played. }
-  if KathyPath = '' then
+  if (N <= 0) or (Length(Pending) > 44100) then
     Exit;
-  if (Player <> nil) and Player.Running then
+  Old := Length(Pending);
+  SetLength(Pending, Old + N);
+  FillChar(Pending[Old], N, 0);
+end;
+
+procedure Pump;
+var
+  Got: Integer;
+begin
+  if (Player = nil) or not Player.Running or (Length(Pending) = 0) then
     Exit;
+  Got := FileWrite(Player.Input.Handle, Pending[0], Length(Pending));
+  if Got > 0 then
+    Delete(Pending, 0, Got);
+end;
+
+procedure DrainPlayer;
+var
+  Buf: array[0..255] of Byte;
+  N: Integer;
+begin
+  if (Player = nil) or (Player.Output = nil) then
+    Exit;
+  repeat
+    N := FileRead(Player.Output.Handle, Buf, SizeOf(Buf));
+  until N <= 0;
+end;
+
+procedure Unblock(H: THandle);
+var
+  Flags: cint;
+begin
+  Flags := fpfcntl(H, F_GETFL);
+  if Flags >= 0 then
+    fpfcntl(H, F_SETFL, Flags or O_NONBLOCK);
+end;
+
+procedure OpenChannel;
+var
+  Exe, Name: string;
+begin
   FreeAndNil(Player);
   if FileExists('/usr/bin/pw-play') then
     Exe := '/usr/bin/pw-play'
+  else if FileExists('/usr/bin/pw-cat') then
+    Exe := '/usr/bin/pw-cat'
   else if FileExists('/usr/bin/paplay') then
     Exe := '/usr/bin/paplay'
   else
@@ -472,22 +542,99 @@ begin
   begin
     Writeln('no pw-play, paplay, or aplay');
     Flush(Output);
+    ChannelRetry := Now + 30 / 86400;
     Exit;
   end;
+  { One raw stream for the life of the program. Silence keeps the HDMI
+    port awake; a shout is just more samples on that same stream. }
   Player := TProcess.Create(nil);
   Player.Executable := Exe;
-  if ExtractFileName(Exe) = 'aplay' then
+  Name := ExtractFileName(Exe);
+  if (Name = 'pw-play') or (Name = 'pw-cat') then
+  begin
+    if Name = 'pw-cat' then
+      Player.Parameters.Add('--playback');
+    Player.Parameters.Add('--raw');
+    Player.Parameters.Add('--format=s16');
+    Player.Parameters.Add('--rate=22050');
+    Player.Parameters.Add('--channels=1');
+    Player.Parameters.Add('-');
+  end
+  else if Name = 'paplay' then
+  begin
+    Player.Parameters.Add('--raw');
+    Player.Parameters.Add('--format=s16le');
+    Player.Parameters.Add('--rate=22050');
+    Player.Parameters.Add('--channels=1');
+  end
+  else
+  begin
     Player.Parameters.Add('-q');
-  Player.Parameters.Add(KathyPath);
+    Player.Parameters.Add('-t');
+    Player.Parameters.Add('raw');
+    Player.Parameters.Add('-f');
+    Player.Parameters.Add('S16_LE');
+    Player.Parameters.Add('-r');
+    Player.Parameters.Add('22050');
+    Player.Parameters.Add('-c');
+    Player.Parameters.Add('1');
+  end;
+  Player.Options := [poUsePipes];
   try
     Player.Execute;
   except
     FreeAndNil(Player);
+    ChannelRetry := Now + 5 / 86400;
     Exit;
   end;
-  KathyUntil := Now + (WavPlaybackSeconds(KathyShout) + 0.2) / 86400;
+  if not Player.Running then
+  begin
+    Writeln('audio channel did not stay open');
+    Flush(Output);
+    FreeAndNil(Player);
+    ChannelRetry := Now + 5 / 86400;
+    Exit;
+  end;
+  Unblock(Player.Input.Handle);
+  if Player.Output <> nil then
+    Unblock(Player.Output.Handle);
+  ChannelRetry := Now + 365;
+  Writeln('audio channel open');
+  Flush(Output);
+  EnqueueSilence(22050);
+  Pump;
+end;
+
+procedure FeedChannel;
+begin
+  if (Player <> nil) and not Player.Running then
+  begin
+    Writeln('audio channel closed');
+    Flush(Output);
+    FreeAndNil(Player);
+    ChannelRetry := Now + 2 / 86400;
+  end;
+  if ((Player = nil) or not Player.Running) and (Now >= ChannelRetry) then
+    OpenChannel;
+  if (Player = nil) or not Player.Running then
+    Exit;
+  DrainPlayer;
+  if Length(Pending) < 1470 * 6 then
+    EnqueueSilence(1470);
+  Pump;
+end;
+
+procedure PlayKathy;
+begin
+  if Length(ShoutPcm) = 0 then
+    Exit;
+  if (Player = nil) or not Player.Running then
+    OpenChannel;
+  Pending := Pending + ShoutPcm;
+  KathyUntil := Now + (Length(ShoutPcm) / 44100 + 0.4) / 86400;
   Writeln('saying: No bugs! (Kathy)');
   Flush(Output);
+  Pump;
 end;
 
 function SpeechIdle: Boolean;
@@ -567,8 +714,7 @@ begin
     Result := False;
     Exit;
   end;
-  if (Player <> nil) and not Player.Running then
-    FreeAndNil(Player);
+  FeedChannel;
   RefreshStage;
   if Parade <> nil then
   begin
@@ -652,6 +798,7 @@ begin
   gtk_init(@argc, @argv);
   BuildSprites;
   InstallKathy;
+  OpenChannel;
   WantQuit := False;
   FpSignal(SIGINT, @OnSig);
   FpSignal(SIGTERM, @OnSig);
