@@ -104,10 +104,12 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  { Same slot as The Grouch Tribute. The bug is drawn smaller inside it. }
+  { Same slot as The Grouch Tribute's 24 by 24 picture. The can in that
+    picture is about 16 wide and 18 tall, and the ladybird stays inside that. }
   BarW = 24;
   BarH = 24;
-  IconBug = 12;
+  CanW = 16;
+  CanH = 18;
 
 var
   Overlay: PGtkWidget;
@@ -834,8 +836,8 @@ begin
     Exit;
   SW := MaxX - MinX + 1;
   SH := MaxY - MinY + 1;
-  DW := IconBug;
-  DH := IconBug;
+  DW := CanW;
+  DH := CanH;
   if SW * DH > SH * DW then
   begin
     DH := SH * DW div SW;
