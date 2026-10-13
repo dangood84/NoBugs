@@ -104,9 +104,10 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  { Same size as The Grouch Tribute's panel picture. }
+  { Same slot as The Grouch Tribute. The bug is drawn smaller inside it. }
   BarW = 24;
   BarH = 24;
+  IconBug = 12;
 
 var
   Overlay: PGtkWidget;
@@ -737,7 +738,6 @@ begin
     Exit;
   end;
   FeedChannel;
-  PushBarIcon;
   RefreshStage;
   if Parade <> nil then
   begin
@@ -795,7 +795,6 @@ var
   Raw, P, Dst: PByte;
   X, Y, SX, SY, Stride: Integer;
   MinX, MinY, MaxX, MaxY, SW, SH, DW, DH, OX, OY, DX, DY: Integer;
-  R, G, B: Byte;
 begin
   if IconPix = nil then
     Exit;
@@ -803,20 +802,7 @@ begin
   if Raw = nil then
     Exit;
   Stride := gdk_pixbuf_get_rowstride(IconPix);
-  { Every pixel is opaque. A transparent pixbuf is the blank gap in the
-    panel: the slot is reserved, and the bar shows through it. }
-  for Y := 0 to BarH - 1 do
-  begin
-    Dst := Raw + Y * Stride;
-    for X := 0 to BarW - 1 do
-    begin
-      Dst[0] := 236;
-      Dst[1] := 232;
-      Dst[2] := 214;
-      Dst[3] := 255;
-      Inc(Dst, 4);
-    end;
-  end;
+  FillChar(Raw^, BarH * Stride, 0);
   FillChar(Bug, SizeOf(Bug), 0);
   Bug.Species := spLadybug;
   Bug.Dir := 1;
@@ -848,8 +834,8 @@ begin
     Exit;
   SW := MaxX - MinX + 1;
   SH := MaxY - MinY + 1;
-  DW := BarW - 2;
-  DH := BarH - 2;
+  DW := IconBug;
+  DH := IconBug;
   if SW * DH > SH * DW then
   begin
     DH := SH * DW div SW;
@@ -876,19 +862,10 @@ begin
       P := S.Pixels + (SY * S.W + SX) * 4;
       if P[3] <= 40 then
         Continue;
-      R := P[0];
-      G := P[1];
-      B := P[2];
-      if P[3] < 255 then
-      begin
-        R := Byte((Integer(R) * P[3] + 236 * (255 - P[3])) div 255);
-        G := Byte((Integer(G) * P[3] + 232 * (255 - P[3])) div 255);
-        B := Byte((Integer(B) * P[3] + 214 * (255 - P[3])) div 255);
-      end;
       Dst := Raw + (OY + DY) * Stride + (OX + DX) * 4;
-      Dst[0] := R;
-      Dst[1] := G;
-      Dst[2] := B;
+      Dst[0] := P[0];
+      Dst[1] := P[1];
+      Dst[2] := P[2];
       Dst[3] := 255;
     end;
 end;
