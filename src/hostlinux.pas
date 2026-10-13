@@ -106,8 +106,8 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  { One tray slot. Wider than this and the ladybird sits on the language icon. }
-  BarW = 24;
+  { Same bar slot Eyes uses. A square is clipped by the Pi panel. }
+  BarW = 48;
   BarH = 24;
 
 var
@@ -115,8 +115,6 @@ var
   OverlayPix: PGdkPixbuf;
   IconPix: PGdkPixbuf;
   IconWin: PGtkWidget;
-  IconX, IconY, IconWantX, IconStill, IconWait: Integer;
-  IconPlaced, IconHaveX, IconPushed: Boolean;
   StatusIcon: PGtkStatusIcon;
   OverlayPm: PGdkPixmap;
   OverlayPmW, OverlayPmH: Integer;
@@ -708,22 +706,13 @@ begin
   g_signal_connect(G_OBJECT(Item), 'activate', G_CALLBACK(@OnQuit), nil);
   gtk_menu_shell_append(PGtkMenuShell(Menu), Item);
   gtk_widget_show_all(Menu);
-  if When = 0 then
-    When := gtk_get_current_event_time;
   gtk_menu_popup(PGtkMenu(Menu), nil, nil, nil, nil, Button, When);
-  Writeln('menu');
-  Flush(Output);
 end;
 
 procedure OnStatusPopup(Icon: PGtkStatusIcon; Button: guint; ActivateTime: guint32;
   Data: gpointer); cdecl;
 begin
   Popup(Button, ActivateTime);
-end;
-
-procedure OnStatusActivate(Icon: PGtkStatusIcon; Data: gpointer); cdecl;
-begin
-  Popup(1, gtk_get_current_event_time);
 end;
 
 procedure OnSig(sig: cint); cdecl;
@@ -733,12 +722,8 @@ end;
 
 procedure PushBarIcon;
 begin
-  { Once. Setting the picture on every tick makes the panel pull the slot
-    off the language icon and onto the clock, over and over. }
-  if IconPushed or (StatusIcon = nil) or (IconPix = nil) then
-    Exit;
-  gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
-  IconPushed := True;
+  if (StatusIcon <> nil) and (IconPix <> nil) then
+    gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
 end;
 
 function OnIconButton(Widget: PGtkWidget; Event: PGdkEvent; Data: gpointer): gboolean; cdecl;
@@ -761,61 +746,30 @@ procedure PlaceIcon;
 var
   Area: TGdkRectangle;
   X, Y: Integer;
-  Got: Boolean;
 begin
-  if IconPlaced or (IconWin = nil) then
+  if IconWin = nil then
     Exit;
-  Inc(IconWait);
-  Got := False;
-  X := 0;
+  X := ScreenW - BarW - 8;
+  if X < 0 then
+    X := 0;
+  { The slot's reported top is the screen edge, which parks the ladybird
+    above the VNC icon. The other icons sit in the middle of the bar. }
+  Y := 0;
+  if PanelTop > BarH then
+    Y := (PanelTop - BarH) div 2;
   FillChar(Area, SizeOf(Area), 0);
   if (StatusIcon <> nil) and
      gtk_status_icon_get_geometry(StatusIcon, nil, @Area, nil) and
      (Area.width >= 8) and (Area.width <= 160) and
      (Area.height >= 8) and (Area.height <= 160) and
-     (Area.x >= 0) and (Area.x + BarW < ScreenW - 90) then
-  begin
-    { The clock occupies the last stretch of the bar. A reading there is
-      the slot mid-shuffle, not a place to sit. }
-    X := Area.x;
-    Got := True;
-  end;
-  if not Got then
-  begin
-    if IconWait < 90 then
-      Exit;
-    if IconHaveX then
-      X := IconWantX
-    else
-      Exit;
-  end
-  else if (not IconHaveX) or (Abs(X - IconWantX) > 4) then
-  begin
-    IconWantX := X;
-    IconHaveX := True;
-    IconStill := 0;
-    Exit;
-  end
-  else
-  begin
-    Inc(IconStill);
-    if IconStill < 30 then
-      Exit;
-    X := IconWantX;
-  end;
+     (Area.x >= 0) and (Area.x < ScreenW) then
+    X := Area.x + (Area.width - BarW) div 2;
   if X < 0 then
     X := 0;
   if X + BarW > ScreenW then
     X := ScreenW - BarW;
-  Y := 0;
-  if PanelTop > BarH then
-    Y := (PanelTop - BarH) div 2;
-  IconX := X;
-  IconY := Y;
-  IconPlaced := True;
   gtk_window_move(PGtkWindow(IconWin), X, Y);
   gtk_window_resize(PGtkWindow(IconWin), BarW, BarH);
-  gtk_widget_show_all(IconWin);
   if gtk_widget_get_window(IconWin) <> nil then
     gdk_window_raise(gtk_widget_get_window(IconWin));
 end;
@@ -1009,15 +963,13 @@ begin
   gtk_widget_set_app_paintable(IconWin, True);
   gtk_widget_set_double_buffered(IconWin, False);
   gtk_widget_set_size_request(IconWin, BarW, BarH);
-  gtk_widget_set_events(IconWin, GDK_EXPOSURE_MASK or GDK_BUTTON_PRESS_MASK or
-    GDK_BUTTON_RELEASE_MASK);
+  gtk_widget_add_events(IconWin, GDK_BUTTON_PRESS_MASK);
   g_signal_connect(G_OBJECT(IconWin), 'expose-event', G_CALLBACK(@OnIconExpose), nil);
   g_signal_connect(G_OBJECT(IconWin), 'button-press-event', G_CALLBACK(@OnIconButton), nil);
-  g_signal_connect(G_OBJECT(StatusIcon), 'activate', G_CALLBACK(@OnStatusActivate), nil);
   gtk_widget_realize(IconWin);
-  if gtk_widget_get_window(IconWin) <> nil then
-    gdk_window_set_events(gtk_widget_get_window(IconWin),
-      GDK_EXPOSURE_MASK or GDK_BUTTON_PRESS_MASK or GDK_BUTTON_RELEASE_MASK);
+  PlaceIcon;
+  gtk_widget_show_all(IconWin);
+  PlaceIcon;
 end;
 
 procedure RunHost;
