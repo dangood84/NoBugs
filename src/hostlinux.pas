@@ -104,12 +104,10 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  { Same slot as The Grouch Tribute's 24 by 24 picture. The can in that
-    picture is about 16 wide and 18 tall, and the ladybird stays inside that. }
-  BarW = 24;
-  BarH = 24;
-  CanW = 16;
-  CanH = 18;
+  { Tray test. The Grouch Tribute shows no window until it has something
+    to draw. This run does the same: words in the panel, parade window
+    stays unmapped, so we can see whether the icon itself is fine. }
+  IconTrial = True;
 
 var
   Overlay: PGtkWidget;
@@ -431,6 +429,8 @@ procedure Present;
 var
   Win: PGdkWindow;
 begin
+  if Overlay = nil then
+    Exit;
   PaintParade;
   if NeedShape then
     HardenAlpha(OverlayPix);
@@ -790,93 +790,107 @@ begin
   Result := False;
 end;
 
+function WordGlyph(Ch: Char): Byte;
+begin
+  { 5 by 7, bit 4 is the left column. }
+  case Ch of
+    'N': Result := 0;
+    'o': Result := 1;
+    'B': Result := 2;
+    'u': Result := 3;
+    'g': Result := 4;
+    's': Result := 5;
+  else
+    Result := 6;
+  end;
+end;
+
+function WordRow(Ch: Char; Row: Integer): Byte;
+const
+  Bits: array[0..6, 0..6] of Byte = (
+    ($11, $19, $15, $13, $11, $11, $11),
+    ($0E, $11, $11, $11, $11, $11, $0E),
+    ($1E, $11, $11, $1E, $11, $11, $1E),
+    ($11, $11, $11, $11, $11, $11, $0E),
+    ($0E, $11, $11, $0F, $01, $11, $0E),
+    ($0F, $10, $10, $0E, $01, $01, $1E),
+    (0, 0, 0, 0, 0, 0, 0)
+  );
+begin
+  if (Row < 0) or (Row > 6) then
+    Result := 0
+  else
+    Result := Bits[WordGlyph(Ch), Row];
+end;
+
 procedure FillBarPix;
+const
+  Words = 'No Bugs';
+  Scale = 2;
+  Gap = 2;
+  Pad = 4;
 var
-  Bug: TBug;
-  S: TSprite;
-  Raw, P, Dst: PByte;
-  X, Y, SX, SY, Stride: Integer;
-  MinX, MinY, MaxX, MaxY, SW, SH, DW, DH, OX, OY, DX, DY: Integer;
+  Raw, Dst: PByte;
+  X, Y, Stride, W, H, I, GX, GY, PX, PY: Integer;
+  Ink: Boolean;
 begin
   if IconPix = nil then
     Exit;
   Raw := PByte(gdk_pixbuf_get_pixels(IconPix));
   if Raw = nil then
     Exit;
+  W := gdk_pixbuf_get_width(IconPix);
+  H := gdk_pixbuf_get_height(IconPix);
   Stride := gdk_pixbuf_get_rowstride(IconPix);
-  FillChar(Raw^, BarH * Stride, 0);
-  FillChar(Bug, SizeOf(Bug), 0);
-  Bug.Species := spLadybug;
-  Bug.Dir := 1;
-  Bug.Horizontal := True;
-  Bug.Alive := True;
-  S := SpriteFor(Bug);
-  if (S.Pixels = nil) or (S.W < 1) or (S.H < 1) then
-    Exit;
-  MinX := S.W;
-  MinY := S.H;
-  MaxX := -1;
-  MaxY := -1;
-  for Y := 0 to S.H - 1 do
-    for X := 0 to S.W - 1 do
-    begin
-      P := S.Pixels + (Y * S.W + X) * 4;
-      if P[3] <= 40 then
-        Continue;
-      if X < MinX then
-        MinX := X;
-      if Y < MinY then
-        MinY := Y;
-      if X > MaxX then
-        MaxX := X;
-      if Y > MaxY then
-        MaxY := Y;
-    end;
-  if MaxX < MinX then
-    Exit;
-  SW := MaxX - MinX + 1;
-  SH := MaxY - MinY + 1;
-  DW := CanW;
-  DH := CanH;
-  if SW * DH > SH * DW then
+  for Y := 0 to H - 1 do
   begin
-    DH := SH * DW div SW;
-    if DH < 1 then
-      DH := 1;
-  end
-  else
-  begin
-    DW := SW * DH div SH;
-    if DW < 1 then
-      DW := 1;
-  end;
-  OX := (BarW - DW) div 2;
-  OY := (BarH - DH) div 2;
-  for DY := 0 to DH - 1 do
-    for DX := 0 to DW - 1 do
+    Dst := Raw + Y * Stride;
+    for X := 0 to W - 1 do
     begin
-      SX := MinX + DX * SW div DW;
-      SY := MinY + DY * SH div DH;
-      if SX > MaxX then
-        SX := MaxX;
-      if SY > MaxY then
-        SY := MaxY;
-      P := S.Pixels + (SY * S.W + SX) * 4;
-      if P[3] <= 40 then
-        Continue;
-      Dst := Raw + (OY + DY) * Stride + (OX + DX) * 4;
-      Dst[0] := P[0];
-      Dst[1] := P[1];
-      Dst[2] := P[2];
+      Dst[0] := 236;
+      Dst[1] := 232;
+      Dst[2] := 214;
       Dst[3] := 255;
+      Inc(Dst, 4);
     end;
+  end;
+  for I := 1 to Length(Words) do
+    for GY := 0 to 6 do
+      for GX := 0 to 4 do
+      begin
+        Ink := (WordRow(Words[I], GY) and (1 shl (4 - GX))) <> 0;
+        if not Ink then
+          Continue;
+        for PY := 0 to Scale - 1 do
+          for PX := 0 to Scale - 1 do
+          begin
+            X := Pad + (I - 1) * (5 * Scale + Gap) + GX * Scale + PX;
+            Y := Pad + GY * Scale + PY;
+            if (X < 0) or (Y < 0) or (X >= W) or (Y >= H) then
+              Continue;
+            Dst := Raw + Y * Stride + X * 4;
+            Dst[0] := 120;
+            Dst[1] := 24;
+            Dst[2] := 28;
+            Dst[3] := 255;
+          end;
+      end;
 end;
 
 procedure InstallIcon;
+const
+  Words = 'No Bugs';
+  Scale = 2;
+  Gap = 2;
+  Pad = 4;
+var
+  W, H: Integer;
 begin
-  { The Grouch Tribute's panel picture: a 24 by 24 pixbuf on the status
-    icon, and one menu kept for the life of the program. Right-click that. }
-  IconPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, BarW, BarH);
+  { Same calls as The Grouch Tribute. The picture is the words, every
+    pixel opaque, so a blank slot cannot be a see-through ladybird. }
+  W := Pad * 2 + Length(Words) * (5 * Scale + Gap) - Gap;
+  H := Pad * 2 + 7 * Scale;
+  IconPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, W, H);
   FillBarPix;
   StatusIcon := gtk_status_icon_new;
   gtk_status_icon_set_tooltip(StatusIcon, 'No Bugs');
@@ -908,6 +922,18 @@ begin
     ViewH := ScreenH;
 
   InstallIcon;
+
+  if IconTrial then
+  begin
+    Writeln('Panel test: the words No Bugs, and no parade window.');
+    Writeln('Right-click those words, or press Ctrl-C.');
+    g_timeout_add(33, TGSourceFunc(@OnTick), nil);
+    gtk_main;
+    FreeAndNil(Player);
+    if Parade <> nil then
+      FreeAndNil(Parade);
+    Exit;
+  end;
 
   OverlayPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, ScreenW, ViewH);
   Overlay := gtk_window_new(GTK_WINDOW_TOPLEVEL);
