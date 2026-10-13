@@ -24,7 +24,7 @@ make test
 ./bin/nobugs
 ```
 
-On Raspberry Pi OS or Debian, the host is GTK 2, the same family Lemmings Overlay uses, with the panel icon Eyes uses:
+On Raspberry Pi OS or Debian, the host is GTK 2, the same family Lemmings Overlay uses, with the panel icon The Grouch Tribute uses:
 
 ```bash
 sudo apt install fpc libgtk2.0-dev
@@ -62,7 +62,7 @@ The program does not take over the keyboard or the mouse. Clicks pass through. L
 
 The first announcement arrives a few seconds after launch, so you know the voice works. After that it waits an irregular while. It is not a metronome.
 
-On Windows the same program enumerates top-level windows and walks the taskbar. The ladybird sits in the notification area; right-click it for the menu. Linux and Windows do not synthesise a voice. They play a wave of Kathy recorded on the Mac, already pitched an octave up. Linux opens one raw `pw-play` stream at startup and leaves it open, writing silence until Kathy’s samples go out on that same stream, so the television stays awake between lines. Windows hands the same bytes to `PlaySound`. The overlay is a GTK 2 window that stays off the panel: no override-redirect, and no RGBA colormap unless a compositor is actually running, because on a Pi that colormap is a white sheet. The ladybird in the panel is a GtkStatusIcon, the call Eyes uses. Right-click it, or press Ctrl-C. A pure Wayland session still needs XWayland, which Raspberry Pi OS provides. The Mac build is the one that was run and watched.
+On Windows the same program enumerates top-level windows and walks the taskbar. The ladybird sits in the notification area; right-click it for the menu. Linux and Windows do not synthesise a voice. They play a wave of Kathy recorded on the Mac, already pitched an octave up. Linux opens one raw `pw-play` stream at startup and leaves it open, writing silence until Kathy’s samples go out on that same stream, so the television stays awake between lines. Windows hands the same bytes to `PlaySound`. The overlay is a GTK 2 window that stays off the panel: no override-redirect, and no RGBA colormap, because on a Pi that visual paints a white sheet. The ladybird in the panel is a 24 by 24 GtkStatusIcon, the same call The Grouch Tribute uses. Right-click it for the menu, or press Ctrl-C. A pure Wayland session still needs XWayland, which Raspberry Pi OS provides. The Mac build is the one that was run and watched.
 
 ## Layout
 

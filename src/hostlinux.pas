@@ -8,10 +8,9 @@ unit hostlinux;
   An override-redirect window sits on top of the panel menus and the
   desktop stops redrawing. This one is an ordinary undecorated window.
 
-  An RGBA colormap with no compositor is painted as a white sheet.
-  The colormap is used only when _NET_WM_CM_S0 actually has an owner.
-  Otherwise the bugs are a 1-bit shape, and the first frame is an empty
-  shape so the desktop is never covered in white while we wake up.
+  An RGBA colormap on this Pi paints a white sheet even when the visual
+  exists. The bugs stay on a normal visual as a 1-bit shape, and the
+  first frame is an empty shape so the desktop is never covered in white.
 
   shape_combine_mask clears the input shape. Clicks are punched through
   again after every reshape, or the parade would steal the panel.
@@ -21,8 +20,9 @@ unit hostlinux;
   under 56 is lifted to 56, which is what cleared that strip.
 
   FPC's gtk2 unit does not declare the status-icon calls. They are
-  cdecl externals, the same way Eyes reaches the panel. That icon is
-  the one that shows up. Ctrl-C still works if a panel ignores it.
+  cdecl externals. The panel picture is a 24 by 24 pixbuf on that
+  icon, the same way The Grouch Tribute does it, and the menu is
+  built once. There is no second window. Ctrl-C still quits.
 
   Window ids come from libX11.so.6. The x and xlib Pascal units are
   not in this unit; their record layouts do not match the library.
@@ -76,9 +76,7 @@ type
 function gtk_status_icon_new: PGtkStatusIcon; cdecl; external;
 procedure gtk_status_icon_set_from_pixbuf(icon: PGtkStatusIcon; pixbuf: PGdkPixbuf); cdecl; external;
 procedure gtk_status_icon_set_visible(icon: PGtkStatusIcon; visible: gboolean); cdecl; external;
-procedure gtk_status_icon_set_tooltip_text(icon: PGtkStatusIcon; text: Pgchar); cdecl; external;
-function gtk_status_icon_get_geometry(icon: PGtkStatusIcon; screen: Pointer;
-  area: Pointer; orientation: Pointer): gboolean; cdecl; external;
+procedure gtk_status_icon_set_tooltip(icon: PGtkStatusIcon; text: Pgchar); cdecl; external;
 function gtk_widget_get_window(widget: PGtkWidget): PGdkWindow; cdecl; external;
 function gdk_screen_get_rgba_colormap(screen: PGdkScreen): PGdkColormap; cdecl; external;
 procedure gdk_window_input_shape_combine_region(window: PGdkWindow;
@@ -106,16 +104,16 @@ const
   XA_CARDINAL = 6;
   XIsViewable = 2;
   ShapeAlpha = 48;
-  { Same bar slot Eyes uses. A square is clipped by the Pi panel. }
-  BarW = 48;
+  { Same size as The Grouch Tribute's panel picture. }
+  BarW = 24;
   BarH = 24;
 
 var
   Overlay: PGtkWidget;
   OverlayPix: PGdkPixbuf;
   IconPix: PGdkPixbuf;
-  IconWin: PGtkWidget;
   StatusIcon: PGtkStatusIcon;
+  BarMenu: PGtkWidget;
   OverlayPm: PGdkPixmap;
   OverlayPmW, OverlayPmH: Integer;
   ScreenW, ScreenH, PanelTop: Integer;
@@ -686,7 +684,7 @@ begin
     Parade.Paused := not Parade.Paused;
 end;
 
-procedure Popup(Button: guint; When: guint32);
+function BuildBarMenu: PGtkWidget;
 var
   Menu, Item: PGtkWidget;
 begin
@@ -706,13 +704,15 @@ begin
   g_signal_connect(G_OBJECT(Item), 'activate', G_CALLBACK(@OnQuit), nil);
   gtk_menu_shell_append(PGtkMenuShell(Menu), Item);
   gtk_widget_show_all(Menu);
-  gtk_menu_popup(PGtkMenu(Menu), nil, nil, nil, nil, Button, When);
+  Result := Menu;
 end;
 
 procedure OnStatusPopup(Icon: PGtkStatusIcon; Button: guint; ActivateTime: guint32;
   Data: gpointer); cdecl;
 begin
-  Popup(Button, ActivateTime);
+  if BarMenu = nil then
+    BarMenu := BuildBarMenu;
+  gtk_menu_popup(PGtkMenu(BarMenu), nil, nil, nil, nil, Button, ActivateTime);
 end;
 
 procedure OnSig(sig: cint); cdecl;
@@ -724,54 +724,6 @@ procedure PushBarIcon;
 begin
   if (StatusIcon <> nil) and (IconPix <> nil) then
     gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
-end;
-
-function OnIconButton(Widget: PGtkWidget; Event: PGdkEvent; Data: gpointer): gboolean; cdecl;
-begin
-  Result := True;
-  if Event <> nil then
-    Popup(Event^.button.button, Event^.button.time);
-end;
-
-function OnIconExpose(Widget: PGtkWidget; Event: PGdkEvent; Data: gpointer): gboolean; cdecl;
-begin
-  Result := True;
-  if (Widget = nil) or (Widget^.window = nil) or (IconPix = nil) then
-    Exit;
-  gdk_draw_pixbuf(Widget^.window, nil, IconPix, 0, 0, 0, 0, BarW, BarH,
-    GDK_RGB_DITHER_NONE, 0, 0);
-end;
-
-procedure PlaceIcon;
-var
-  Area: TGdkRectangle;
-  X, Y: Integer;
-begin
-  if IconWin = nil then
-    Exit;
-  X := ScreenW - BarW - 8;
-  if X < 0 then
-    X := 0;
-  { The slot's reported top is the screen edge, which parks the ladybird
-    above the VNC icon. The other icons sit in the middle of the bar. }
-  Y := 0;
-  if PanelTop > BarH then
-    Y := (PanelTop - BarH) div 2;
-  FillChar(Area, SizeOf(Area), 0);
-  if (StatusIcon <> nil) and
-     gtk_status_icon_get_geometry(StatusIcon, nil, @Area, nil) and
-     (Area.width >= 8) and (Area.width <= 160) and
-     (Area.height >= 8) and (Area.height <= 160) and
-     (Area.x >= 0) and (Area.x < ScreenW) then
-    X := Area.x + (Area.width - BarW) div 2;
-  if X < 0 then
-    X := 0;
-  if X + BarW > ScreenW then
-    X := ScreenW - BarW;
-  gtk_window_move(PGtkWindow(IconWin), X, Y);
-  gtk_window_resize(PGtkWindow(IconWin), BarW, BarH);
-  if gtk_widget_get_window(IconWin) <> nil then
-    gdk_window_raise(gtk_widget_get_window(IconWin));
 end;
 
 function OnTick(Data: gpointer): gboolean; cdecl;
@@ -786,7 +738,6 @@ begin
   end;
   FeedChannel;
   PushBarIcon;
-  PlaceIcon;
   RefreshStage;
   if Parade <> nil then
   begin
@@ -944,38 +895,19 @@ end;
 
 procedure InstallIcon;
 begin
-  { The panel reserves a tray slot and paints nothing there, so clicks on
-    that gap never arrive. This window is drawn the same way the parade is,
-    sits on the slot, and takes the click. }
+  { The Grouch Tribute's panel picture: a 24 by 24 pixbuf on the status
+    icon, and one menu kept for the life of the program. Right-click that. }
   IconPix := gdk_pixbuf_new(GDK_COLORSPACE_RGB, True, 8, BarW, BarH);
   FillBarPix;
   StatusIcon := gtk_status_icon_new;
-  gtk_status_icon_set_tooltip_text(StatusIcon, 'No Bugs');
-  gtk_status_icon_set_visible(StatusIcon, True);
-  g_signal_connect(G_OBJECT(StatusIcon), 'popup-menu', G_CALLBACK(@OnStatusPopup), nil);
+  gtk_status_icon_set_tooltip(StatusIcon, 'No Bugs');
+  g_signal_connect(G_OBJECT(StatusIcon), 'popup-menu', TGCallback(@OnStatusPopup), nil);
   PushBarIcon;
-
-  IconWin := gtk_window_new(GTK_WINDOW_POPUP);
-  gtk_window_set_decorated(PGtkWindow(IconWin), False);
-  gtk_window_set_resizable(PGtkWindow(IconWin), False);
-  gtk_window_set_accept_focus(PGtkWindow(IconWin), False);
-  gtk_window_set_skip_taskbar_hint(PGtkWindow(IconWin), True);
-  gtk_widget_set_app_paintable(IconWin, True);
-  gtk_widget_set_double_buffered(IconWin, False);
-  gtk_widget_set_size_request(IconWin, BarW, BarH);
-  gtk_widget_add_events(IconWin, GDK_BUTTON_PRESS_MASK);
-  g_signal_connect(G_OBJECT(IconWin), 'expose-event', G_CALLBACK(@OnIconExpose), nil);
-  g_signal_connect(G_OBJECT(IconWin), 'button-press-event', G_CALLBACK(@OnIconButton), nil);
-  gtk_widget_realize(IconWin);
-  PlaceIcon;
-  gtk_widget_show_all(IconWin);
-  PlaceIcon;
 end;
 
 procedure RunHost;
 var
   Screen: PGdkScreen;
-  Map: PGdkColormap;
   ViewH: Integer;
 begin
   gtk_init(@argc, @argv);
@@ -989,7 +921,8 @@ begin
   Screen := gdk_screen_get_default;
   ScreenW := gdk_screen_get_width(Screen);
   ScreenH := gdk_screen_get_height(Screen);
-  NeedShape := not CompositorRunning;
+  { An RGBA colormap on this Pi paints a white sheet. The bugs stay a 1-bit shape. }
+  NeedShape := True;
   PanelTop := ReadPanelTop;
   ViewH := ScreenH - PanelTop;
   if ViewH < 1 then
@@ -1007,12 +940,6 @@ begin
   gtk_window_set_accept_focus(PGtkWindow(Overlay), False);
   gtk_widget_set_app_paintable(Overlay, True);
   gtk_widget_set_double_buffered(Overlay, False);
-  if not NeedShape then
-  begin
-    Map := gdk_screen_get_rgba_colormap(Screen);
-    if Map <> nil then
-      gtk_widget_set_colormap(Overlay, Map);
-  end;
   gtk_window_move(PGtkWindow(Overlay), 0, PanelTop);
   gtk_window_resize(PGtkWindow(Overlay), ScreenW, ViewH);
   g_signal_connect(G_OBJECT(Overlay), 'delete-event', G_CALLBACK(@OnQuit), nil);
