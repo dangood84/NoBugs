@@ -681,7 +681,6 @@ begin
   Writeln('The ladybird is in the panel. Right-click it, or press Ctrl-C.');
   g_timeout_add(33, TGSourceFunc(@OnTick), nil);
   gtk_main;
-  FreeAndNil(Talker);
   if Parade <> nil then
     FreeAndNil(Parade);
 end;
