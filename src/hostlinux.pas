@@ -455,21 +455,22 @@ procedure PlayKathy;
 var
   Exe: string;
 begin
-  { A shell that backgrounds paplay and then exits hangs the player up
-    mid-syllable. That is the "Di!". Keep paplay as our own child so she
-    can finish the half-second shout. }
+  { paplay hands the wave to PipeWire and leaves. The television only
+    gets the first syllable. pw-play stays until the shout has been played. }
   if KathyPath = '' then
     Exit;
   if (Player <> nil) and Player.Running then
     Exit;
   FreeAndNil(Player);
-  if FileExists('/usr/bin/paplay') then
+  if FileExists('/usr/bin/pw-play') then
+    Exe := '/usr/bin/pw-play'
+  else if FileExists('/usr/bin/paplay') then
     Exe := '/usr/bin/paplay'
   else
     Exe := '/usr/bin/aplay';
   if not FileExists(Exe) then
   begin
-    Writeln('no paplay or aplay');
+    Writeln('no pw-play, paplay, or aplay');
     Flush(Output);
     Exit;
   end;
