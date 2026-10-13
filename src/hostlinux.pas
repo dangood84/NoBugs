@@ -39,7 +39,7 @@ implementation
 {$IFDEF LINUX}
 
 uses
-  SysUtils, Classes, Math, BaseUnix, Unix, ctypes,
+  SysUtils, Classes, Process, Math, BaseUnix, Unix, ctypes,
   gtk2, gdk2, gdk2pixbuf, glib2,
   nbtypes, nbgeom, nbsprites, nbsim, nbsound, nbvoice;
 
@@ -119,6 +119,7 @@ var
   WantQuit: Boolean;
   KathyPath: string;
   KathyUntil: TDateTime;
+  Player: TProcess;
 
 function Dpy: TXDisplay;
 begin
@@ -452,16 +453,37 @@ end;
 
 procedure PlayKathy;
 var
-  Cmd: string;
+  Exe: string;
 begin
-  { The same two-step Lemmings uses. paplay hits the desktop mixer.
-    aplay is only there if paplay is missing. No device name: naming
-    the HDMI sink was what left the television quiet. }
+  { A shell that backgrounds paplay and then exits hangs the player up
+    mid-syllable. That is the "Di!". Keep paplay as our own child so she
+    can finish the half-second shout. }
   if KathyPath = '' then
     Exit;
-  Cmd := '(paplay ''' + KathyPath + ''' || aplay -q ''' + KathyPath +
-    ''') >/dev/null 2>&1 &';
-  fpSystem(Cmd);
+  if (Player <> nil) and Player.Running then
+    Exit;
+  FreeAndNil(Player);
+  if FileExists('/usr/bin/paplay') then
+    Exe := '/usr/bin/paplay'
+  else
+    Exe := '/usr/bin/aplay';
+  if not FileExists(Exe) then
+  begin
+    Writeln('no paplay or aplay');
+    Flush(Output);
+    Exit;
+  end;
+  Player := TProcess.Create(nil);
+  Player.Executable := Exe;
+  if ExtractFileName(Exe) = 'aplay' then
+    Player.Parameters.Add('-q');
+  Player.Parameters.Add(KathyPath);
+  try
+    Player.Execute;
+  except
+    FreeAndNil(Player);
+    Exit;
+  end;
   KathyUntil := Now + (WavPlaybackSeconds(KathyShout) + 0.2) / 86400;
   Writeln('saying: No bugs! (Kathy)');
   Flush(Output);
@@ -544,6 +566,8 @@ begin
     Result := False;
     Exit;
   end;
+  if (Player <> nil) and not Player.Running then
+    FreeAndNil(Player);
   RefreshStage;
   if Parade <> nil then
   begin
@@ -681,6 +705,7 @@ begin
   Writeln('The ladybird is in the panel. Right-click it, or press Ctrl-C.');
   g_timeout_add(33, TGSourceFunc(@OnTick), nil);
   gtk_main;
+  FreeAndNil(Player);
   if Parade <> nil then
     FreeAndNil(Parade);
 end;
