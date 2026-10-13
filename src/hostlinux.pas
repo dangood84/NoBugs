@@ -718,9 +718,18 @@ begin
 end;
 
 procedure PushBarIcon;
+var
+  Fresh: PGdkPixbuf;
 begin
-  if (StatusIcon <> nil) and (IconPix <> nil) then
-    gtk_status_icon_set_from_pixbuf(StatusIcon, IconPix);
+  { A new pixbuf each time. The panel keeps the first object it was given,
+    and that one was an empty transparent slot. }
+  if (StatusIcon = nil) or (IconPix = nil) then
+    Exit;
+  Fresh := gdk_pixbuf_copy(IconPix);
+  if Fresh = nil then
+    Exit;
+  gtk_status_icon_set_from_pixbuf(StatusIcon, Fresh);
+  g_object_unref(Fresh);
 end;
 
 function OnTick(Data: gpointer): gboolean; cdecl;
@@ -787,32 +796,107 @@ end;
 
 procedure FillBarPix;
 var
-  Pixels: array of Byte;
-  Raw, Src: PByte;
-  BugW, OX, Y, Stride: Integer;
+  Bug: TBug;
+  S: TSprite;
+  Raw, P, Dst: PByte;
+  X, Y, SX, SY, Stride: Integer;
+  MinX, MinY, MaxX, MaxY, SW, SH, DW, DH, OX, OY, DX, DY: Integer;
+  R, G, B: Byte;
 begin
   if IconPix = nil then
     Exit;
   Raw := PByte(gdk_pixbuf_get_pixels(IconPix));
   if Raw = nil then
     Exit;
-  { The art is wider than it is tall. Fit it to the bar height and centre it,
-    the way Eyes' pair of eyes sits in this same 48 by 24 slot. }
-  BugW := BarH * ArtW div ArtH;
-  if BugW > BarW then
-    BugW := BarW;
-  if BugW < 1 then
-    BugW := 1;
-  SetLength(Pixels, BugW * BarH * 4);
-  PaintLadybugIcon(@Pixels[0], BugW, BarH);
   Stride := gdk_pixbuf_get_rowstride(IconPix);
-  OX := (BarW - BugW) div 2;
+  { Every pixel is opaque. A transparent pixbuf is the blank gap in the
+    panel: the slot is reserved, and the bar shows through it. }
   for Y := 0 to BarH - 1 do
   begin
-    FillChar((Raw + Y * Stride)^, BarW * 4, 0);
-    Src := @Pixels[Y * BugW * 4];
-    Move(Src^, (Raw + Y * Stride + OX * 4)^, BugW * 4);
+    Dst := Raw + Y * Stride;
+    for X := 0 to BarW - 1 do
+    begin
+      Dst[0] := 236;
+      Dst[1] := 232;
+      Dst[2] := 214;
+      Dst[3] := 255;
+      Inc(Dst, 4);
+    end;
   end;
+  FillChar(Bug, SizeOf(Bug), 0);
+  Bug.Species := spLadybug;
+  Bug.Dir := 1;
+  Bug.Horizontal := True;
+  Bug.Alive := True;
+  S := SpriteFor(Bug);
+  if (S.Pixels = nil) or (S.W < 1) or (S.H < 1) then
+    Exit;
+  MinX := S.W;
+  MinY := S.H;
+  MaxX := -1;
+  MaxY := -1;
+  for Y := 0 to S.H - 1 do
+    for X := 0 to S.W - 1 do
+    begin
+      P := S.Pixels + (Y * S.W + X) * 4;
+      if P[3] <= 40 then
+        Continue;
+      if X < MinX then
+        MinX := X;
+      if Y < MinY then
+        MinY := Y;
+      if X > MaxX then
+        MaxX := X;
+      if Y > MaxY then
+        MaxY := Y;
+    end;
+  if MaxX < MinX then
+    Exit;
+  SW := MaxX - MinX + 1;
+  SH := MaxY - MinY + 1;
+  DW := BarW - 2;
+  DH := BarH - 2;
+  if SW * DH > SH * DW then
+  begin
+    DH := SH * DW div SW;
+    if DH < 1 then
+      DH := 1;
+  end
+  else
+  begin
+    DW := SW * DH div SH;
+    if DW < 1 then
+      DW := 1;
+  end;
+  OX := (BarW - DW) div 2;
+  OY := (BarH - DH) div 2;
+  for DY := 0 to DH - 1 do
+    for DX := 0 to DW - 1 do
+    begin
+      SX := MinX + DX * SW div DW;
+      SY := MinY + DY * SH div DH;
+      if SX > MaxX then
+        SX := MaxX;
+      if SY > MaxY then
+        SY := MaxY;
+      P := S.Pixels + (SY * S.W + SX) * 4;
+      if P[3] <= 40 then
+        Continue;
+      R := P[0];
+      G := P[1];
+      B := P[2];
+      if P[3] < 255 then
+      begin
+        R := Byte((Integer(R) * P[3] + 236 * (255 - P[3])) div 255);
+        G := Byte((Integer(G) * P[3] + 232 * (255 - P[3])) div 255);
+        B := Byte((Integer(B) * P[3] + 214 * (255 - P[3])) div 255);
+      end;
+      Dst := Raw + (OY + DY) * Stride + (OX + DX) * 4;
+      Dst[0] := R;
+      Dst[1] := G;
+      Dst[2] := B;
+      Dst[3] := 255;
+    end;
 end;
 
 procedure InstallIcon;
