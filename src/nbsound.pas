@@ -69,15 +69,8 @@ uses
 
 function PickPhrase: string;
 begin
-  { Most of the time the line is the line. The variants are for the
-    second and third hearing, when a metronome would give the joke away. }
-  case Random(10) of
-    0: Result := 'There are no bugs!';
-    1: Result := 'Absolutely no bugs!';
-    2: Result := 'Zero bugs!';
-  else
-    Result := 'No bugs!';
-  end;
+  { One line. The Mac speaks it, and the stored wave is the same line. }
+  Result := 'No bugs!';
 end;
 
 function ShoutedLine(const Line: string): string;
@@ -87,12 +80,6 @@ begin
     "No bugs!" — nothing else is added. }
   if Line = 'No bugs!' then
     Result := 'No! Bugs!'
-  else if Line = 'Zero bugs!' then
-    Result := 'Zero! Bugs!'
-  else if Line = 'There are no bugs!' then
-    Result := 'There are no! Bugs!'
-  else if Line = 'Absolutely no bugs!' then
-    Result := 'Absolutely! No! Bugs!'
   else
     Result := Line;
 end;
