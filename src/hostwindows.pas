@@ -31,6 +31,9 @@ const
   NIF_TIP = $00000004;
   NIM_ADD = $00000000;
   NIM_DELETE = $00000002;
+  WaveSlots = 4;
+  { Kathy's header already claims this rate. The chime is built at it too. }
+  WaveRate = 22050;
 
 { The layered-window call is real. The unit just never declares it. }
 function UpdateLayeredWindow(hwnd: HWND; hdcDst: HDC; pptDst, psize: Pointer;
@@ -47,9 +50,12 @@ var
   RegionLeft, RegionTop: Double;
   Quit: Boolean;
   KathyHold: TBytes;
-  ChimePath: string;
   { 0 idle, 1 Kathy's recording is still playing. }
   SpeechPhase: Integer;
+  WaveOut: HWAVEOUT;
+  WaveHdr: array[0..WaveSlots - 1] of TWaveHdr;
+  { Each slot owns the samples its header still points at. }
+  WavePcm: array[0..WaveSlots - 1] of TBytes;
   LineBusyUntil: TDateTime;
 
 type
@@ -247,17 +253,153 @@ begin
   UpdateLayeredWindow(Overlay, 0, @Pt, @Sz, MemDC, @Src, 0, @Blend, ULW_ALPHA);
 end;
 
+procedure CloseWaveOut;
+var
+  I: Integer;
+begin
+  if WaveOut = 0 then
+    Exit;
+  waveOutReset(WaveOut);
+  for I := 0 to High(WaveHdr) do
+    if (WaveHdr[I].dwFlags and WHDR_PREPARED) <> 0 then
+      waveOutUnprepareHeader(WaveOut, @WaveHdr[I], SizeOf(TWaveHdr));
+  waveOutClose(WaveOut);
+  WaveOut := 0;
+  FillChar(WaveHdr, SizeOf(WaveHdr), 0);
+end;
+
+function OpenWaveOut: Boolean;
+var
+  Fmt: TWaveFormatEx;
+begin
+  Result := WaveOut <> 0;
+  if Result then
+    Exit;
+  FillChar(Fmt, SizeOf(Fmt), 0);
+  Fmt.wFormatTag := WAVE_FORMAT_PCM;
+  Fmt.nChannels := 1;
+  Fmt.nSamplesPerSec := WaveRate;
+  Fmt.wBitsPerSample := 16;
+  Fmt.nBlockAlign := 2;
+  Fmt.nAvgBytesPerSec := WaveRate * 2;
+  Fmt.cbSize := 0;
+  Result := waveOutOpen(@WaveOut, WAVE_MAPPER, @Fmt, 0, 0, CALLBACK_NULL) = MMSYSERR_NOERROR;
+  if not Result then
+  begin
+    WaveOut := 0;
+    Writeln('audio channel did not open');
+    Flush(Output);
+    Exit;
+  end;
+  Writeln('audio channel open');
+  Flush(Output);
+end;
+
+procedure ReleaseDoneHdrs;
+var
+  I: Integer;
+begin
+  if WaveOut = 0 then
+    Exit;
+  for I := 0 to High(WaveHdr) do
+    if ((WaveHdr[I].dwFlags and WHDR_PREPARED) <> 0) and
+       ((WaveHdr[I].dwFlags and WHDR_INQUEUE) = 0) then
+    begin
+      waveOutUnprepareHeader(WaveOut, @WaveHdr[I], SizeOf(TWaveHdr));
+      FillChar(WaveHdr[I], SizeOf(WaveHdr[I]), 0);
+    end;
+end;
+
+function FreeWaveSlot: Integer;
+var
+  I: Integer;
+begin
+  Result := -1;
+  for I := 0 to High(WaveHdr) do
+    if (WaveHdr[I].dwFlags and WHDR_PREPARED) = 0 then
+      Exit(I);
+end;
+
+function PcmOf(const Wav: TBytes): TBytes;
+var
+  I, N: Integer;
+begin
+  Result := nil;
+  if Length(Wav) <= 44 then
+    Exit;
+  I := 12;
+  while I + 8 <= Length(Wav) do
+  begin
+    N := Integer(Wav[I + 4]) or (Integer(Wav[I + 5]) shl 8) or
+      (Integer(Wav[I + 6]) shl 16) or (Integer(Wav[I + 7]) shl 24);
+    if (Wav[I] = Ord('d')) and (Wav[I + 1] = Ord('a')) and
+      (Wav[I + 2] = Ord('t')) and (Wav[I + 3] = Ord('a')) then
+    begin
+      if (N < 0) or (I + 8 + N > Length(Wav)) then
+        N := Length(Wav) - (I + 8);
+      SetLength(Result, N);
+      if N > 0 then
+        Move(Wav[I + 8], Result[0], N);
+      Exit;
+    end;
+    if N < 0 then
+      Break;
+    I := I + 8 + N;
+  end;
+end;
+
+function QueueWav(const Wav: TBytes): Boolean;
+var
+  Slot: Integer;
+  Pcm: TBytes;
+begin
+  { PlaySound opens the device again for every line. On this Boot Camp
+    Mac the Cirrus stack drops that, so the shout never arrives. One
+    waveOut stays open, and each line is PCM queued on it. }
+  Result := False;
+  Pcm := PcmOf(Wav);
+  if Length(Pcm) < 2 then
+    Exit;
+  if not OpenWaveOut then
+    Exit;
+  ReleaseDoneHdrs;
+  Slot := FreeWaveSlot;
+  if Slot < 0 then
+    Exit;
+  WavePcm[Slot] := Pcm;
+  FillChar(WaveHdr[Slot], SizeOf(TWaveHdr), 0);
+  WaveHdr[Slot].lpData := PAnsiChar(@WavePcm[Slot][0]);
+  WaveHdr[Slot].dwBufferLength := Length(WavePcm[Slot]);
+  if waveOutPrepareHeader(WaveOut, @WaveHdr[Slot], SizeOf(TWaveHdr)) <> MMSYSERR_NOERROR then
+    Exit;
+  if waveOutWrite(WaveOut, @WaveHdr[Slot], SizeOf(TWaveHdr)) <> MMSYSERR_NOERROR then
+  begin
+    waveOutUnprepareHeader(WaveOut, @WaveHdr[Slot], SizeOf(TWaveHdr));
+    FillChar(WaveHdr[Slot], SizeOf(WaveHdr[Slot]), 0);
+    Exit;
+  end;
+  Result := True;
+end;
+
+procedure MarkBusy(Seconds: Double);
+begin
+  if Seconds <= 0 then
+    Exit;
+  if LineBusyUntil < Now then
+    LineBusyUntil := Now;
+  LineBusyUntil := LineBusyUntil + (Seconds + 0.12) / 86400;
+  SpeechPhase := 1;
+end;
+
 procedure PlayKathy;
 begin
   if Length(KathyHold) < 44 then
     KathyHold := KathyShout;
-  if Length(KathyHold) < 44 then
+  if not QueueWav(KathyHold) then
     Exit;
-  { The bytes have to outlive this call. PlaySound only borrows them. }
-  PlaySound(PChar(@KathyHold[0]), 0, SND_MEMORY or SND_ASYNC or SND_NODEFAULT);
-  LineBusyUntil := Now + (WavPlaybackSeconds(KathyHold) + 0.2) / 86400;
-  SpeechPhase := 1;
+  MarkBusy(WavPlaybackSeconds(KathyHold));
   Writeln('saying: No bugs! (Kathy)');
+  Flush(Output);
 end;
 
 procedure PollSpeech;
@@ -276,9 +418,8 @@ var
   Wav: TBytes;
 begin
   Wav := MakeChimeWav;
-  if not WriteWavFile(ChimePath, Wav) then
-    Exit;
-  PlaySound(PChar(ChimePath), 0, SND_FILENAME or SND_ASYNC or SND_NODEFAULT);
+  if QueueWav(Wav) then
+    MarkBusy(WavPlaybackSeconds(Wav));
 end;
 
 procedure Announce(const Line: string);
@@ -306,6 +447,7 @@ begin
         if Parade <> nil then
         begin
           Parade.Tick(1 / 30);
+          ReleaseDoneHdrs;
           PollSpeech;
           if SpeechIdle then
           begin
@@ -366,8 +508,8 @@ begin
     BufH := PrimaryH;
   RegionLeft := Vx;
   RegionTop := PrimaryH - Vy;
-  ChimePath := GetTempDir + 'nobugs-chime.wav';
   KathyHold := KathyShout;
+  OpenWaveOut;
 
   FillChar(Cls, SizeOf(Cls), 0);
   Cls.lpfnWndProc := @WindowProc;
@@ -428,6 +570,7 @@ begin
   end;
 
   KillTimer(Overlay, 1);
+  CloseWaveOut;
   Shell_NotifyIconA(NIM_DELETE, @Notify);
   if Notify.hIcon <> 0 then
     DestroyIcon(Notify.hIcon);
