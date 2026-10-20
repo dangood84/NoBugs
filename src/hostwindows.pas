@@ -25,6 +25,17 @@ const
   MenuSay = 1001;
   MenuPause = 1002;
   MenuQuit = 1003;
+  { The Windows unit declares the tray record, but not these flags. }
+  NIF_MESSAGE = $00000001;
+  NIF_ICON = $00000002;
+  NIF_TIP = $00000004;
+  NIM_ADD = $00000000;
+  NIM_DELETE = $00000002;
+
+{ The layered-window call is real. The unit just never declares it. }
+function UpdateLayeredWindow(hwnd: HWND; hdcDst: HDC; pptDst, psize: Pointer;
+  hdcSrc: HDC; pptSrc: Pointer; crKey: COLORREF; pblend: Pointer;
+  dwFlags: DWORD): WINBOOL; stdcall; external 'user32' name 'UpdateLayeredWindow';
 
 var
   Overlay: HWND;
@@ -363,7 +374,9 @@ begin
   Cls.hInstance := HInstance;
   Cls.lpszClassName := 'NoBugsParade';
   Cls.hCursor := LoadCursor(0, IDC_ARROW);
-  RegisterClass(Cls);
+  { Classes.RegisterClass is the one in scope. This is the window one,
+    and it wants the record's address. }
+  Windows.RegisterClass(@Cls);
 
   Overlay := CreateWindowEx(
     WS_EX_LAYERED or WS_EX_TRANSPARENT or WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE,
@@ -390,7 +403,8 @@ begin
 
   FillChar(Notify, SizeOf(Notify), 0);
   Notify.cbSize := SizeOf(Notify);
-  Notify.hWnd := Overlay;
+  { The field is Wnd in this unit, not the hWnd the headers use. }
+  Notify.Wnd := Overlay;
   Notify.uID := 1;
   Notify.uFlags := NIF_MESSAGE or NIF_ICON or NIF_TIP;
   Notify.uCallbackMessage := TrayMsg;
