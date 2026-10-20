@@ -56,6 +56,10 @@ var
   WaveHdr: array[0..WaveSlots - 1] of TWaveHdr;
   { Each slot owns the samples its header still points at. }
   WavePcm: array[0..WaveSlots - 1] of TBytes;
+  { What the open device actually accepted. Kathy's bytes are 22050 mono. }
+  PlayRate: Integer;
+  PlayChannels: Integer;
+  OpenReported: Boolean;
   LineBusyUntil: TDateTime;
 
 type
@@ -268,31 +272,82 @@ begin
   FillChar(WaveHdr, SizeOf(WaveHdr), 0);
 end;
 
-function OpenWaveOut: Boolean;
+function MmText(Code: MMRESULT): string;
+begin
+  case Code of
+    MMSYSERR_NOERROR: Result := 'ok';
+    2: Result := 'bad device';
+    4: Result := 'device busy';
+    6: Result := 'no driver';
+    7: Result := 'out of memory';
+    11: Result := 'bad parameter';
+    WAVERR_BADFORMAT: Result := 'format refused';
+  else
+    Result := 'error ' + IntToStr(Code);
+  end;
+end;
+
+function TryWave(Device: UINT; Rate, Channels: Integer; out Err: MMRESULT): Boolean;
 var
   Fmt: TWaveFormatEx;
+begin
+  FillChar(Fmt, SizeOf(Fmt), 0);
+  Fmt.wFormatTag := WAVE_FORMAT_PCM;
+  Fmt.nChannels := Channels;
+  Fmt.nSamplesPerSec := Rate;
+  Fmt.wBitsPerSample := 16;
+  Fmt.nBlockAlign := Channels * 2;
+  Fmt.nAvgBytesPerSec := DWORD(Rate) * DWORD(Fmt.nBlockAlign);
+  Fmt.cbSize := 0;
+  Err := waveOutOpen(@WaveOut, Device, @Fmt, 0, 0, CALLBACK_NULL);
+  Result := Err = MMSYSERR_NOERROR;
+  if not Result then
+    WaveOut := 0;
+end;
+
+function OpenWaveOut: Boolean;
+const
+  { 22050 mono is the recording. The Cirrus driver on this Boot Camp Mac
+    often refuses it, and will take 44100 or 48000 instead. }
+  TryRate: array[0..5] of Integer = (22050, 44100, 44100, 48000, 48000, 22050);
+  TryCh: array[0..5] of Integer = (1, 1, 2, 2, 1, 2);
+var
+  I, D, N: Integer;
+  Err, Last: MMRESULT;
+  Dev: UINT;
 begin
   Result := WaveOut <> 0;
   if Result then
     Exit;
-  FillChar(Fmt, SizeOf(Fmt), 0);
-  Fmt.wFormatTag := WAVE_FORMAT_PCM;
-  Fmt.nChannels := 1;
-  Fmt.nSamplesPerSec := WaveRate;
-  Fmt.wBitsPerSample := 16;
-  Fmt.nBlockAlign := 2;
-  Fmt.nAvgBytesPerSec := WaveRate * 2;
-  Fmt.cbSize := 0;
-  Result := waveOutOpen(@WaveOut, WAVE_MAPPER, @Fmt, 0, 0, CALLBACK_NULL) = MMSYSERR_NOERROR;
-  if not Result then
+  N := Integer(waveOutGetNumDevs);
+  Last := 6;
+  for D := -1 to N - 1 do
   begin
-    WaveOut := 0;
-    Writeln('audio channel did not open');
-    Flush(Output);
-    Exit;
+    if D < 0 then
+      Dev := WAVE_MAPPER
+    else
+      Dev := UINT(D);
+    for I := 0 to High(TryRate) do
+      if TryWave(Dev, TryRate[I], TryCh[I], Err) then
+      begin
+        PlayRate := TryRate[I];
+        PlayChannels := TryCh[I];
+        Writeln('audio channel open (', PlayRate, ' Hz, ', PlayChannels, ' ch)');
+        Flush(Output);
+        Exit(True);
+      end
+      else
+        Last := Err;
   end;
-  Writeln('audio channel open');
-  Flush(Output);
+  if not OpenReported then
+  begin
+    OpenReported := True;
+    if N = 0 then
+      Writeln('audio channel did not open (no wave device)')
+    else
+      Writeln('audio channel did not open (', MmText(Last), ', devices ', N, ')');
+    Flush(Output);
+  end;
 end;
 
 procedure ReleaseDoneHdrs;
@@ -348,6 +403,64 @@ begin
   end;
 end;
 
+function SampleAt(const Src: TBytes; Index: Integer): Integer;
+begin
+  Result := SmallInt(Word(Src[Index * 2]) or (Word(Src[Index * 2 + 1]) shl 8));
+end;
+
+procedure WriteSample(var Dst: TBytes; At, Value: Integer);
+var
+  W: Word;
+begin
+  W := Word(Value);
+  Dst[At] := Byte(W and $FF);
+  Dst[At + 1] := Byte((W shr 8) and $FF);
+end;
+
+function FitPcm(const Src: TBytes): TBytes;
+var
+  SrcN, DstN, I, Ch, Idx, S0, S1, Sample, At: Integer;
+  Pos: Int64;
+begin
+  { The device may have opened at another rate. Stretch the 22050
+    samples onto that rate so the pitch does not jump another octave. }
+  Result := nil;
+  SrcN := Length(Src) div 2;
+  if (SrcN < 1) or (PlayRate < 1) or (PlayChannels < 1) then
+    Exit;
+  if (PlayRate = WaveRate) and (PlayChannels = 1) then
+  begin
+    Result := Src;
+    Exit;
+  end;
+  DstN := Integer((Int64(SrcN) * PlayRate + (WaveRate div 2)) div WaveRate);
+  if DstN < 1 then
+    DstN := 1;
+  SetLength(Result, DstN * PlayChannels * 2);
+  for I := 0 to DstN - 1 do
+  begin
+    Pos := (Int64(I) * WaveRate);
+    Idx := Integer(Pos div PlayRate);
+    if Idx >= SrcN - 1 then
+      Sample := SampleAt(Src, SrcN - 1)
+    else
+    begin
+      S0 := SampleAt(Src, Idx);
+      S1 := SampleAt(Src, Idx + 1);
+      Sample := S0 + Integer((Int64(S1 - S0) * (Pos mod PlayRate)) div PlayRate);
+    end;
+    if Sample > 32767 then
+      Sample := 32767;
+    if Sample < -32768 then
+      Sample := -32768;
+    for Ch := 0 to PlayChannels - 1 do
+    begin
+      At := (I * PlayChannels + Ch) * 2;
+      WriteSample(Result, At, Sample);
+    end;
+  end;
+end;
+
 function QueueWav(const Wav: TBytes): Boolean;
 var
   Slot: Integer;
@@ -361,6 +474,9 @@ begin
   if Length(Pcm) < 2 then
     Exit;
   if not OpenWaveOut then
+    Exit;
+  Pcm := FitPcm(Pcm);
+  if Length(Pcm) < 2 then
     Exit;
   ReleaseDoneHdrs;
   Slot := FreeWaveSlot;
@@ -509,7 +625,6 @@ begin
   RegionLeft := Vx;
   RegionTop := PrimaryH - Vy;
   KathyHold := KathyShout;
-  OpenWaveOut;
 
   FillChar(Cls, SizeOf(Cls), 0);
   Cls.lpfnWndProc := @WindowProc;
@@ -555,6 +670,7 @@ begin
   Shell_NotifyIconA(NIM_ADD, @Notify);
 
   ShowWindow(Overlay, SW_SHOWNOACTIVATE);
+  OpenWaveOut;
   RefreshStage;
   if Parade <> nil then
     Parade.FillRoster;
